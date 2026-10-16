@@ -1,12 +1,24 @@
 # EVE1G
 
-**Rockstar Editor video export for GTA V / FiveM** — with your ReShade preset, real camera motion blur and a clean, UI-free picture.
+**Export the Rockstar Editor with DLSS 5 neural rendering (NR).** EVE1G is a Rockstar Editor video exporter for GTA V / FiveM that records the finished DLSS 5 NR image, together with your ReShade preset, real camera motion blur and a clean, UI-free picture.
 
 Version **0.9.0-beta** · by **TEX1G**
 
 EVE1G is a modified version of [Extended Video Export](https://github.com/ali-alidoust/gta5-extended-video-export) by Ali Alidoust, licensed under the [Apache License 2.0](LICENSE.md). See [NOTICE](NOTICE) for what was changed.
 
 > Looking for the ready-to-use download? Get the **EVE1G + Focus Puller** release zip — it has the built files and an install guide. This repository is the source code of EVE1G.
+
+## Why EVE1G: DLSS 5 NR in your exports
+
+DLSS 5 in GTA V (through the GTA V Upscaler mod) switches the game to a flip-model swap chain. The original Extended Video Export reads the frame after forcing a `Present()` - on that swap chain the buffer is already gone, so exports come out **black**.
+
+EVE1G reads the frame where it is finished instead:
+
+- **DLSS 5 NR is in the video** - the upscaled, neural-rendered image, not the raw game frame.
+- **Your ReShade preset is on top of it** - DOF, grade and every ReShade pass, exactly like on screen.
+- **No UI** - with the upscaler set to render ReShade before the UI (`mRenderReShadeBeforeUI = true`), the frame is taken before the game draws its HUD, export progress bar or cursor.
+- **Every motion blur sample** goes through DLSS 5 NR too, so the blur is made of fully rendered frames.
+- The sidecar `.txt` of every clip records the upscaler state (DLSS preset, scale, DLSS 5 NR, frame generation), so you always know how a clip was made.
 
 ## Features
 
@@ -21,6 +33,7 @@ EVE1G is a modified version of [Extended Video Export](https://github.com/ali-al
 ## Requirements to run
 
 - ReShade 6.x **with add-on support**
+- For DLSS 5 NR: an NVIDIA RTX GPU and the GTA V Upscaler mod with DLSS 5 enabled (EVE1G also works without it)
 - [Voukoder](https://www.voukoder.org/) (video encoding)
 - Microsoft Visual C++ Redistributable 2015–2022 (x64)
 

@@ -1,7 +1,7 @@
 EVE1G
 =====
 Version 0.9.0-beta, by TEX1G.
-Rockstar Editor video export for FiveM with ReShade, motion blur and clean (UI-free) capture.
+Rockstar Editor video export for FiveM with DLSS 5 NR, ReShade, motion blur and clean (UI-free) capture.
 A modified version of Extended Video Export by ali-alidoust (github.com/ali-alidoust/gta5-extended-video-export),
 Apache License 2.0 - see THIRD-PARTY-NOTICES.txt in the release.
 
