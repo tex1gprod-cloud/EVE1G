@@ -9,7 +9,8 @@
 //   format = png16  : 16-bit grayscale PNG sequence (lossless; After Effects / Premiere / Resolve import it)
 //            prores : ProRes 4444 .mov next to the video (one file, 10-bit)
 //            exr    : 32-bit float OpenEXR sequence, channel Z = distance in (approximate) metres
-//   near / far (metres), curve = log | linear, white = near | far   (png16 and prores)
+//   range = auto (default: near/far taken from the first frame of each clip, kept for the whole clip) | fixed
+//   near / far (metres, used with range = fixed), curve = log | linear, white = near | far   (png16 and prores)
 
 #define NOMINMAX
 #include <d3d11.h>
@@ -27,7 +28,9 @@ void Begin(const std::string& base, uint32_t width, uint32_t height, uint32_t fp
 void OnPresent(reshade::api::effect_runtime* runtime, bool exporting);
 
 // Every exported game frame = motion-blur sample (render thread). sample = index within the video frame (0..perFrame-1)
-void OnSample(reshade::api::effect_runtime* runtime, ID3D11DeviceContext* context, int sample, int perFrame);
+// gameDepth = the game's own depth-stencil buffer (read first: it always holds the frame being exported).
+void OnSample(reshade::api::effect_runtime* runtime, ID3D11DeviceContext* context, int sample, int perFrame,
+              ID3D11Texture2D* gameDepth);
 
 // After a video frame was handed to the encoder (render thread): writes the matching depth frame.
 void OnFrameEmitted(ID3D11DeviceContext* context);

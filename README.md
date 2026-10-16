@@ -25,7 +25,7 @@ EVE1G reads the frame where it is finished instead:
 - Runs as a **ReShade add-on**: your ReShade preset (DOF, grade, every pass) is in the export.
 - **Clean capture**: the frame is taken before the game draws its UI — no export progress bar, no cursor.
 - **Real motion blur**: every video frame is made of several game frames, accumulated in linear light, with shutter angle, soft shutter and optional rolling shutter.
-- **Passes**: depth (PNG16 / ProRes 4444 / OpenEXR), normals, clean plate (no ReShade), proxy, experimental ID pass, and HFR (every game frame on its own).
+- **Passes**: depth (PNG16 / OpenEXR - read from the game's own depth buffer, with an automatic near/far range per clip; ProRes depth is not available yet), normals, clean plate (no ReShade), proxy, experimental ID pass, and HFR (every game frame on its own).
 - **Export progress on screen** (never in the video), finished notice, sidecar `.txt` with the settings of each clip.
 - **EVE1G Settings** window for everything in `EVE1G.ini`.
 - Frame-exact timing for the **Focus Puller** ReShade add-on (exported via `EVE1G_ExportTimeSeconds`).

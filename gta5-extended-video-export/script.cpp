@@ -761,7 +761,7 @@ void AccumulateAndEmit(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, ID3
             const int sample = config::motion_blur_samples != 0
                                    ? static_cast<int>(::exportContext->total_frame_num % perFrame)
                                    : 0;
-            depth::OnSample(g_runtime.load(), pContext, sample, perFrame);
+            depth::OnSample(g_runtime.load(), pContext, sample, perFrame, pGameDepthBuffer.Get());
             passes::OnSample(pContext, pGameDepthBuffer.Get(), sample, perFrame); // ID pass (stencil)
         }
         hfr::OnGameFrame(pDevice, pContext, pSource); // every game frame, unblended (HFR export)
@@ -1382,8 +1382,8 @@ std::pair<uint32_t, uint32_t> eve::CaptureSize(ID3D11Texture2D* pVideoEncode, ui
 
 // =====================================================================================================================
 //  EVE1G shot naming + settings sidecar
-//    EVE1G.ini (top section):  project = MyFilm   shot = shot03   take = 0 (0 = next free number)   sidecar = true
-//    -> <Videos>\MyFilm_shot03_t02_24fps_16s_180.mov  +  MyFilm_shot03_t02_24fps_16s_180.txt
+//    EVE1G.ini (top section):  project = Jetsam   shot = shot03   take = 0 (0 = next free number)   sidecar = true
+//    -> D:\EVE_CLIPS\Jetsam_shot03_t02_24fps_16s_180.mov  +  Jetsam_shot03_t02_24fps_16s_180.txt
 //    Without project and shot the old style is kept: EVE1G-20261006191500.mov
 // =====================================================================================================================
 namespace {

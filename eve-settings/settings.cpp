@@ -132,7 +132,7 @@ const Every kHfrEvery[] = {
 
 const Choice kDepthFormat[] = {
     {L"PNG 16-bit sequence  -  lossless, for AE / Premiere / Resolve  [recommended]", "png16"},
-    {L"ProRes 4444 video  -  one .mov next to the video (10-bit)", "prores"},
+    {L"ProRes 4444 video  -  not available yet, writes PNG instead", "prores"},
     {L"OpenEXR float sequence  -  real distance in metres (Nuke / Fusion)", "exr"},
 };
 const Choice kMaster[] = {
@@ -157,7 +157,7 @@ HWND hOut, hProject, hShot, hTake, hSidecar, hPreview;
 HWND hCodec, hQuality, hQualityLabel, hBitrate, hBitrateLabel, hNote, hFormats;
 HWND hFps, hFpsCustom, hSamples, hShutter, hInfo, hRealCam, hRolling;
 HWND hCapture, hReshade, hLivePreview, hHideUi, hProgress, hExr, hLog;
-HWND hDepthOn, hDepthFormat, hDepthNear, hDepthFar, hDepthCurve, hDepthWhite, hDepthNote;
+HWND hDepthOn, hDepthFormat, hDepthNear, hDepthFar, hDepthAuto, hDepthCurve, hDepthWhite, hDepthNote;
 HWND hHfrOn, hHfrFormat, hHfrEvery, hHfrNote;
 HWND hNormalsOn, hNormalsFov, hPlateOn, hProxyOn, hIdOn, hPassNote, hMaster, hNotify, hCaptureNote, hOsdSize;
 HWND hCamFiles, hCamFolder;
@@ -438,7 +438,8 @@ void UpdateHints() {
     const int df = std::max(0, Sel(hDepthFormat));
     const bool exr = df == 2;
     EnableWindow(hDepthFormat, depthOn || normalsOn);
-    for (HWND c : {hDepthNear, hDepthFar, hDepthCurve, hDepthWhite}) EnableWindow(c, depthOn && !exr);
+    for (HWND c : {hDepthAuto, hDepthCurve, hDepthWhite}) EnableWindow(c, depthOn && !exr);
+    for (HWND c : {hDepthNear, hDepthFar}) EnableWindow(c, depthOn && !exr && !Checked(hDepthAuto));
     EnableWindow(hNormalsFov, normalsOn);
     std::wstring note;
     if (!depthOn && !normalsOn) {
@@ -760,6 +761,7 @@ void Load() {
         SetWindowTextW(hDepthNear, W(b).c_str());
         snprintf(b, sizeof(b), "%g", ini.GetReal("DEPTH", "far", 200.0));
         SetWindowTextW(hDepthFar, W(b).c_str());
+        Check(hDepthAuto, Trim(ini.GetString("DEPTH", "range", "auto")) != "fixed");
         SendMessageW(hDepthCurve, CB_SETCURSEL, Trim(ini.GetString("DEPTH", "curve", "log")) == "linear" ? 1 : 0, 0);
         SendMessageW(hDepthWhite, CB_SETCURSEL, Trim(ini.GetString("DEPTH", "white", "near")) == "far" ? 1 : 0, 0);
         Check(hNormalsOn, ini.GetBoolean("PASSES", "normals", false));
@@ -911,6 +913,9 @@ bool Save() {
         ini += "; png16 = 16-bit PNG sequence,  prores = ProRes 4444 .mov,  exr = float OpenEXR sequence (metres)\r\n";
         ini += "format = " + std::string(kDepthFormat[std::max(0, Sel(hDepthFormat))].value) + "\r\n";
         ini += "; png16 / prores: distance range in metres, curve (log / linear) and which end is white (near / far)\r\n";
+        ini += "; range = auto: near / far worked out from the first frame of each clip (full black to white).\r\n"
+               ";         fixed: the near / far below\r\n";
+        ini += std::string("range = ") + (Checked(hDepthAuto) ? "auto" : "fixed") + "\r\n";
         ini += "near = " + std::string(nb) + "\r\nfar = " + std::string(fb) + "\r\n";
         ini += "curve = " + std::string(kDepthCurve[std::max(0, Sel(hDepthCurve))].value) + "\r\n";
         ini += "white = " + std::string(kDepthWhite[std::max(0, Sel(hDepthWhite))].value) + "\r\n\r\n";
@@ -1098,7 +1103,7 @@ void Build() {
     hDepthNear = Edit(CtrlX(dp), dp.row, 60, 0, ID_DEPTH);
     Make(L"STATIC", L"to", SS_CENTER, CtrlX(dp) + 62, dp.row + 4, 24, 20);
     hDepthFar = Edit(CtrlX(dp) + 88, dp.row, 60, 0, ID_DEPTH);
-    Hint(CtrlX(dp) + 154, dp.row + 4, CtrlW(dp) - 154, 20, L"metres, near to far");
+    hDepthAuto = CheckBox(L"Auto (from each clip)", CtrlX(dp) + 160, dp.row + 2, CtrlW(dp) - 160, ID_DEPTH);
     dp.row += kRow;
     Label(dp, L"Look");
     hDepthCurve = Combo(ID_DEPTH, CtrlX(dp), dp.row, 170);

@@ -79,6 +79,7 @@ class config {
     static float depth_far;          // metres
     static bool depth_log_curve;     // log (more detail close up) or linear
     static bool depth_white_near;    // white = near (else white = far)
+    static bool depth_auto_range;    // near/far from the first frame of each clip (else the fixed near/far)
     // extra passes ([PASSES] in EVE1G.ini, see passes.h)
     static bool plate_enabled;   // clean plate: the same shot without the ReShade preset (capture = clean)
     static bool proxy_enabled;   // half-size H.264 proxy for fast editing
@@ -169,9 +170,10 @@ class config {
             depth_far = static_cast<float>(config_parser->GetReal("DEPTH", "far", 200.0));
             depth_log_curve = toLower(getTrimmed(config_parser, "curve", "DEPTH")) != "linear";
             depth_white_near = toLower(getTrimmed(config_parser, "white", "DEPTH")) != "far";
+            depth_auto_range = toLower(getTrimmed(config_parser, "range", "DEPTH")) != "fixed";
             LOG(LL_NON, "Depth pass: ", depth_enabled ? "on" : "off", " format=", depth_format, " near=", depth_near,
                 " far=", depth_far, " curve=", depth_log_curve ? "log" : "linear", " white=",
-                depth_white_near ? "near" : "far");
+                depth_white_near ? "near" : "far", " range=", depth_auto_range ? "auto" : "fixed");
         }
         {
             plate_enabled = config_parser->GetBoolean("PASSES", "clean_plate", false);

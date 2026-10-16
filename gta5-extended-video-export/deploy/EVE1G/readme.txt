@@ -25,8 +25,11 @@ Naming
   plus a MyFilm_shot03_t02_24fps_16s_180.txt with the settings the clip was made with.
 
 Depth pass ([DEPTH] in EVE1G.ini, or the Depth pass box in EVE1G-Settings)
-  Exports a depth map together with the video, frame for frame: a 16-bit PNG sequence, a ProRes
-  4444 .mov or a float OpenEXR sequence (real distance). It needs reshade-shaders\Shaders\EVE1G_Depth.fx
+  Exports a depth map together with the video, frame for frame: a 16-bit PNG sequence or a float
+  OpenEXR sequence (real distance). (ProRes depth is not available yet - PNG is written instead.)
+  The depth is read from the game's own depth buffer, so every frame matches its video frame.
+  range = auto (default) sets near / far from the first frame of each clip, so the map uses the full
+  black-to-white range; range = fixed uses the near / far you set. It needs reshade-shaders\Shaders\EVE1G_Depth.fx
   (installed with EVE1G). EVE1G switches that technique on by itself while it exports - it draws nothing.
   The depth is the same one your ReShade depth of field uses. With motion blur, the depth is taken from
   the sample in the middle of the shutter (depth is never blurred).

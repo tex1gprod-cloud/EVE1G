@@ -35,6 +35,7 @@ float config::depth_near = 0.5f;
 float config::depth_far = 200.0f;
 bool config::depth_log_curve = true;
 bool config::depth_white_near = true;
+bool config::depth_auto_range = true;
 bool config::plate_enabled = false;
 bool config::proxy_enabled = false;
 bool config::normals_enabled = false;

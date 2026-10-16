@@ -23,6 +23,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <memory>
@@ -45,6 +46,7 @@ struct Settings {
     float farM = 200.0f;
     bool logCurve = true;
     bool whiteNear = true;
+    bool autoRange = true; // near/far from the first frame of the clip
 };
 
 struct Job {
@@ -66,6 +68,8 @@ std::string stem;      // file name stem of the sequence files
 std::string target;    // what is written, for the log and sidecar
 uint32_t outW = 0, outH = 0;
 float farPlane = 1000.0f; // RESHADE_DEPTH_LINEARIZATION_FAR_PLANE: linear depth 1.0 = this many metres
+bool reversedZ = true;    // RESHADE_DEPTH_INPUT_IS_REVERSED (GTA V: reversed)
+bool rangeSet = false;    // auto range worked out for this clip
 
 // render thread
 bool armed = false;
@@ -75,6 +79,18 @@ bool toldNoEffect = false, toldNoTexture = false, toldFormat = false;
 ComPtr<ID3D11Texture2D> staging;
 D3D11_TEXTURE2D_DESC stagingDesc{};
 bool haveSample = false;
+// The game's own depth-stencil buffer: read first, because it always holds the frame being exported. ReShade's depth
+// texture can stay on an older frame during an export (its depth-buffer choice / "copy before clear" sees a different
+// pattern of draws while the editor exports) - then every depth frame came out the same.
+ComPtr<ID3D11Texture2D> gameStaging;
+D3D11_TEXTURE2D_DESC gameDesc{};
+int gameKind = 0;      // 1 = 32-bit float depth, 2 = 24-bit unorm depth
+uint32_t gameBpp = 0;  // bytes per texel of the game's depth-stencil
+int sampleSource = 0;  // this sample: 1 = game depth buffer, 2 = ReShade's EVE1G_Depth texture
+bool toldSource = false;
+uint64_t lastHash = 0;
+int sameCount = 0;
+bool toldStale = false;
 std::vector<float> last; // last depth frame, repeated when a frame had no depth
 
 uint64_t frames = 0, repeated = 0, written = 0, failed = 0;
@@ -108,6 +124,7 @@ Settings ReadSettings() {
     s.farM = std::max(s.nearM * 1.01f, config::depth_far);
     s.logCurve = config::depth_log_curve;
     s.whiteNear = config::depth_white_near;
+    s.autoRange = config::depth_auto_range;
     return s;
 }
 
@@ -119,8 +136,13 @@ std::string DescribeLocked() {
     if (cfg.format == Format::Exr) {
         snprintf(b, sizeof(b), "%s", FormatName(cfg.format));
     } else {
-        snprintf(b, sizeof(b), "%s, %.2f m to %.0f m, %s, white = %s", FormatName(cfg.format), cfg.nearM, cfg.farM,
-                 cfg.logCurve ? "log" : "linear", cfg.whiteNear ? "near" : "far");
+        if (cfg.autoRange && !rangeSet) {
+            snprintf(b, sizeof(b), "%s, auto range (from the first frame), %s, white = %s", FormatName(cfg.format),
+                     cfg.logCurve ? "log" : "linear", cfg.whiteNear ? "near" : "far");
+        } else {
+            snprintf(b, sizeof(b), "%s, %.2f m to %.1f m%s, %s, white = %s", FormatName(cfg.format), cfg.nearM, cfg.farM,
+                     cfg.autoRange ? " (auto)" : "", cfg.logCurve ? "log" : "linear", cfg.whiteNear ? "near" : "far");
+        }
     }
     return b;
 }
@@ -387,6 +409,16 @@ void Begin(const std::string& base, uint32_t width, uint32_t height, uint32_t fp
     frames = repeated = written = failed = 0;
     firstError.clear();
     haveSample = false;
+    rangeSet = false;
+    toldSource = false;
+    toldStale = false;
+    sameCount = 0;
+    lastHash = 0;
+    if (cfg.format == Format::ProRes) {
+        // ProRes depth froze the game when its file opened (second Voukoder file during an export) - PNG until fixed
+        LOG(LL_WRN, "EVE1G depth: ProRes depth is not available yet - writing a 16-bit PNG sequence instead");
+        cfg.format = Format::Png16;
+    }
     last.clear();
     queue.clear();
     stop = false;
@@ -466,8 +498,15 @@ void OnPresent(reshade::api::effect_runtime* runtime, bool exporting) {
         if (runtime->get_preprocessor_definition("RESHADE_DEPTH_LINEARIZATION_FAR_PLANE", v, &n) && v[0]) {
             fp = static_cast<float>(atof(v));
         }
+        n = sizeof(v);
+        v[0] = 0;
+        bool rev = true;
+        if (runtime->get_preprocessor_definition("RESHADE_DEPTH_INPUT_IS_REVERSED", v, &n) && v[0]) {
+            rev = atoi(v) != 0;
+        }
         std::lock_guard<std::mutex> lock(mx);
         farPlane = fp > 1.0f ? fp : 1000.0f;
+        reversedZ = rev;
         LOG(LL_NON, "EVE1G depth: technique ", technique.handle ? "on" : "MISSING", ", ReShade far plane ", farPlane,
             " m");
     } else if (!want && armed) {
@@ -479,7 +518,8 @@ void OnPresent(reshade::api::effect_runtime* runtime, bool exporting) {
     }
 }
 
-void OnSample(reshade::api::effect_runtime* runtime, ID3D11DeviceContext* context, int sample, int perFrame) {
+void OnSample(reshade::api::effect_runtime* runtime, ID3D11DeviceContext* context, int sample, int perFrame,
+              ID3D11Texture2D* gameDepth) {
     {
         std::lock_guard<std::mutex> lock(mx);
         if (!active) {
@@ -494,10 +534,67 @@ void OnSample(reshade::api::effect_runtime* runtime, ID3D11DeviceContext* contex
         const int first = std::clamp(static_cast<int>(std::ceil((1.0f - strength) * samples - 1e-4f)), 0, samples);
         wanted = (first + samples) / 2;
     }
-    if (sample != wanted || !runtime || !context) {
+    if (sample != wanted || !context) {
         return;
     }
     haveSample = false;
+    sampleSource = 0;
+    // 1st choice: the game's own depth-stencil buffer - always the frame being exported
+    if (gameDepth) {
+        D3D11_TEXTURE2D_DESC gd;
+        gameDepth->GetDesc(&gd);
+        int kind = 0;
+        uint32_t bpp = 0;
+        switch (gd.Format) {
+        case DXGI_FORMAT_R32G8X24_TYPELESS:
+        case DXGI_FORMAT_D32_FLOAT_S8X24_UINT: kind = 1; bpp = 8; break;
+        case DXGI_FORMAT_R32_TYPELESS:
+        case DXGI_FORMAT_D32_FLOAT:
+        case DXGI_FORMAT_R32_FLOAT: kind = 1; bpp = 4; break;
+        case DXGI_FORMAT_R24G8_TYPELESS:
+        case DXGI_FORMAT_D24_UNORM_S8_UINT: kind = 2; bpp = 4; break;
+        default: break;
+        }
+        if (kind != 0 && gd.SampleDesc.Count == 1) {
+            if (!gameStaging || gameDesc.Width != gd.Width || gameDesc.Height != gd.Height || gameDesc.Format != gd.Format) {
+                D3D11_TEXTURE2D_DESC sd = gd;
+                sd.MipLevels = 1;
+                sd.ArraySize = 1;
+                sd.Usage = D3D11_USAGE_STAGING;
+                sd.BindFlags = 0;
+                sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                sd.MiscFlags = 0;
+                ComPtr<ID3D11Device> device;
+                gameDepth->GetDevice(device.GetAddressOf());
+                if (!device || FAILED(device->CreateTexture2D(&sd, nullptr, gameStaging.ReleaseAndGetAddressOf()))) {
+                    gameStaging = nullptr;
+                } else {
+                    gameDesc = sd;
+                }
+            }
+            if (gameStaging) {
+                context->CopySubresourceRegion(gameStaging.Get(), 0, 0, 0, 0, gameDepth, 0, nullptr);
+                gameKind = kind;
+                gameBpp = bpp;
+                sampleSource = 1;
+                haveSample = true;
+                if (!toldSource) {
+                    toldSource = true;
+                    LOG(LL_NON, "EVE1G depth: reading the game's depth buffer (", gd.Width, "x", gd.Height, " ",
+                        conv_dxgi_format_to_string(gd.Format), ")");
+                }
+                return;
+            }
+        }
+    }
+    // 2nd choice: ReShade's depth through EVE1G_Depth.fx
+    if (!runtime) {
+        return;
+    }
+    if (!toldSource) {
+        toldSource = true;
+        LOG(LL_NON, "EVE1G depth: reading ReShade's depth (EVE1G_Depth.fx) - the game's depth buffer is not readable");
+    }
     const reshade::api::effect_texture_variable var = runtime->find_texture_variable(kEffect, kTexture);
     reshade::api::resource_view srv{0}, srvSrgb{0};
     if (var.handle != 0) {
@@ -544,12 +641,14 @@ void OnSample(reshade::api::effect_runtime* runtime, ID3D11DeviceContext* contex
         stagingDesc = sd;
     }
     context->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, tex.Get(), 0, nullptr);
+    sampleSource = 2;
     haveSample = true;
 }
 
 void OnFrameEmitted(ID3D11DeviceContext* context) {
     uint32_t w, h;
     float fp;
+    bool rev;
     {
         std::lock_guard<std::mutex> lock(mx);
         if (!active || stop) {
@@ -558,10 +657,43 @@ void OnFrameEmitted(ID3D11DeviceContext* context) {
         w = outW;
         h = outH;
         fp = farPlane;
+        rev = reversedZ;
     }
     std::vector<float> metres;
     bool ok = false;
-    if (haveSample && staging && context) {
+    if (haveSample && sampleSource == 1 && gameStaging && context) {
+        // the game's depth: linearised exactly like ReShade.fxh (same far plane / reversed settings)
+        D3D11_MAPPED_SUBRESOURCE map{};
+        if (SUCCEEDED(context->Map(gameStaging.Get(), 0, D3D11_MAP_READ, 0, &map))) {
+            metres.resize(static_cast<size_t>(w) * h);
+            const uint32_t sw = gameDesc.Width, sh = gameDesc.Height;
+            for (uint32_t y = 0; y < h; ++y) {
+                const uint32_t sy = sh == h ? y : static_cast<uint32_t>((static_cast<uint64_t>(y) * sh) / h);
+                const uint8_t* row = static_cast<const uint8_t*>(map.pData) + static_cast<size_t>(sy) * map.RowPitch;
+                float* out = metres.data() + static_cast<size_t>(y) * w;
+                for (uint32_t x = 0; x < w; ++x) {
+                    const uint32_t sx = sw == w ? x : static_cast<uint32_t>((static_cast<uint64_t>(x) * sw) / w);
+                    const uint8_t* t = row + static_cast<size_t>(sx) * gameBpp;
+                    float d;
+                    if (gameKind == 1) {
+                        std::memcpy(&d, t, sizeof(float));
+                    } else {
+                        uint32_t u;
+                        std::memcpy(&u, t, sizeof(u));
+                        d = static_cast<float>(u & 0xFFFFFFu) / 16777215.0f;
+                    }
+                    if (rev) {
+                        d = 1.0f - d;
+                    }
+                    float lin = d / (fp - d * (fp - 1.0f));
+                    lin = std::clamp(std::isfinite(lin) ? lin : 1.0f, 0.0f, 1.0f);
+                    out[x] = lin * fp;
+                }
+            }
+            context->Unmap(gameStaging.Get(), 0);
+            ok = true;
+        }
+    } else if (haveSample && staging && context) {
         D3D11_MAPPED_SUBRESOURCE map{};
         if (SUCCEEDED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &map))) {
             metres.resize(static_cast<size_t>(w) * h);
@@ -583,6 +715,45 @@ void OnFrameEmitted(ID3D11DeviceContext* context) {
         }
     }
     haveSample = false;
+    if (ok) {
+        // A depth that never changes while the picture does means the source is stale: say so once.
+        uint64_t hsh = 1469598103934665603ull;
+        for (size_t i = 0; i < metres.size(); i += 997) {
+            uint32_t u;
+            std::memcpy(&u, &metres[i], sizeof(u));
+            hsh = (hsh ^ u) * 1099511628211ull;
+        }
+        sameCount = (hsh == lastHash) ? sameCount + 1 : 0;
+        lastHash = hsh;
+        if (sameCount == 5 && !toldStale) {
+            toldStale = true;
+            LOG(LL_WRN, "EVE1G depth: the depth has not changed for 6 frames - if the shot moves, the depth source is "
+                        "stale (", sampleSource == 1 ? "game depth buffer" : "ReShade depth", ")");
+        }
+    }
+    if (ok && cfg.autoRange && !rangeSet && cfg.enabled) {
+        // auto range: near/far from this first frame (sky left out), kept for the whole clip so nothing flickers
+        std::vector<float> v;
+        v.reserve(metres.size() / 7 + 1);
+        for (size_t i = 0; i < metres.size(); i += 7) {
+            const float m = metres[i];
+            if (m > 0.0f && m < fp * 0.98f) {
+                v.push_back(m);
+            }
+        }
+        if (v.size() > 100) {
+            std::sort(v.begin(), v.end());
+            float n = v[static_cast<size_t>(v.size() * 0.005)];
+            float f = v[std::min(v.size() - 1, static_cast<size_t>(v.size() * 0.995))];
+            n = std::max(0.05f, n * 0.9f);
+            f = std::max(f * 1.1f, n * 2.0f);
+            std::lock_guard<std::mutex> lock(mx);
+            cfg.nearM = n;
+            cfg.farM = f;
+            rangeSet = true;
+            LOG(LL_NON, "EVE1G depth: auto range ", n, " m to ", f, " m (from the first frame, kept for the clip)");
+        }
+    }
     if (!ok) {
         // keep the depth sequence frame-for-frame with the video: repeat the last depth (or far, before the first)
         metres = last.empty() ? std::vector<float>(static_cast<size_t>(w) * h, fp) : last;
