@@ -1,0 +1,10 @@
+{
+  "name": "gta5-extended-video-export",
+  "version-string": "1.0.0",
+  "dependencies": [
+    "directxtex",
+    "openexr",
+    "polyhook2",
+    "nlohmann-json"
+  ]
+}

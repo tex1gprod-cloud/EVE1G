@@ -1,0 +1,19 @@
+{
+    "version": 1,
+    "format": {
+        "container": "mov",
+        "faststart": false
+    },
+    "video": {
+        "encoder": "prores_ks",
+        "options": "_pixelFormat=yuv422p10le|profile=3",
+        "filters": "",
+        "sidedata": ""
+    },
+    "audio": {
+        "encoder": "pcm_s16le",
+        "options": "_sampleFormat=s16",
+        "filters": "",
+        "sidedata": ""
+    }
+}

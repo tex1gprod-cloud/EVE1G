@@ -1,0 +1,22 @@
+EVE1G
+Copyright (c) 2026 TEX1G
+
+This product is a modified version of "Extended Video Export"
+(https://github.com/ali-alidoust/gta5-extended-video-export)
+Copyright (c) Ali Alidoust and contributors,
+licensed under the Apache License, Version 2.0 (see LICENSE.md).
+
+Changes made by TEX1G (2026) include, among others:
+- runs as a ReShade add-on instead of a ScriptHookV script
+- clean (UI-free) capture and ReShade preset rendering into the export
+- motion blur accumulation in linear light, shutter angle, soft and rolling shutter
+- depth, normals, clean plate, proxy, ID and HFR passes
+- export progress display, finished notice, sidecar files, naming
+- EVE1G Settings window and EVE1G.ini options
+- frame-exact timing export for the Focus Puller ReShade add-on
+- static build, new build scripts and many fixes
+
+All files in this repository that come from Extended Video Export
+have been modified.
+
+Third-party components and their licenses: THIRD-PARTY-NOTICES.txt
