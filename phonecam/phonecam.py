@@ -17,6 +17,7 @@ import json
 import os
 import re
 import signal
+import socket
 import sys
 import threading
 import time
@@ -618,6 +619,17 @@ setInterval(refreshPhone, 5000);
 """
 
 
+def lan_ip(phone_url):
+    """This PC's address on the Wi-Fi: the one it would use to reach the phone."""
+    parts = urllib.parse.urlsplit(phone_url)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect((parts.hostname, parts.port or 8080))  # UDP connect: nothing is sent
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
 def load_config():
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
@@ -670,6 +682,9 @@ def main():
     url = f"http://localhost:{args.port}"
     print(f"Phone:      {phone.base_url}")
     print(f"Viewer:     {url}")
+    if args.host == "0.0.0.0":
+        ip = lan_ip(phone.base_url)
+        print(f"On the Wi-Fi: http://{ip or '<this-pc-ip>'}:{args.port}  (any phone, tablet or PC)")
     print(f"Recordings: {out_dir}")
     print("Press Ctrl+C to quit.")
 

@@ -23,6 +23,20 @@ python phonecam.py 192.168.1.23
 
 The viewer opens in your browser at http://localhost:8090.
 
+## Watch from other devices on the Wi-Fi
+
+`start.bat` opens the viewer to your home network. The window prints an address such as:
+
+```
+On the Wi-Fi: http://192.168.1.40:8090
+```
+
+Open that address on any phone, tablet or PC on the same Wi-Fi. The first time, Windows asks whether to let Python through the firewall: click **Allow** on **Private networks**.
+
+From the command line, add `--host 0.0.0.0` to do the same. Without it, the viewer works only on the PC that runs PhoneCam.
+
+Anyone on your Wi-Fi who opens that address can see the camera and press the buttons. That's fine at home, but don't run it this way on public Wi-Fi.
+
 If you set a login in IP Webcam (Settings > Local broadcasting > Login/password):
 
 ```
@@ -47,7 +61,6 @@ Files in "Saved on this PC" can be downloaded by clicking them. They are also in
 ## Notes
 
 - PC recordings have **no sound**. IP Webcam's audio is a separate stream. Use "Record on the phone" if you need sound.
-- The viewer is reachable only from this PC. To open it from another device on the Wi-Fi, start with `--host 0.0.0.0`, then go to `http://<pc-ip>:8090`.
 - Keep the phone screen on, or enable IP Webcam's "Prevent sleep" option. Otherwise Android may pause the stream. If the stream drops, PhoneCam reconnects by itself.
 - Closing PhoneCam during a recording still saves the video properly.
 - `python phonecam.py --help` lists all options (port, recording folder, fixed frame rate).
