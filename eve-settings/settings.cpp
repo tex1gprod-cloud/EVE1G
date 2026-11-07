@@ -112,6 +112,12 @@ const Rolling kRolling[] = {
     {L"16 ms - mirrorless / DSLR", 16}, {L"25 ms - phone", 25},
 };
 
+struct Streaks { const wchar_t* label; double s; };
+const Streaks kStreaks[] = {
+    {L"Off - lights blend as the screen shows them", 0.0}, {L"Strong - lights keep their punch", 0.5},
+    {L"Stronger - bright streaks and bokeh trails", 0.75},
+};
+
 struct Choice { const wchar_t* label; const char* value; };
 const Choice kCapture[] = {
     {L"Clean  -  before the game UI, ReShade applied  [recommended]", "clean"},
@@ -155,11 +161,12 @@ HFONT g_font, g_bold, g_title;
 double g_scale = 1.0;
 HWND hOut, hProject, hShot, hTake, hSidecar, hPreview;
 HWND hCodec, hQuality, hQualityLabel, hBitrate, hBitrateLabel, hNote, hFormats;
-HWND hFps, hFpsCustom, hSamples, hShutter, hInfo, hRealCam, hRolling;
-HWND hCapture, hReshade, hLivePreview, hHideUi, hProgress, hExr, hLog;
+HWND hFps, hFpsCustom, hSamples, hShutter, hInfo, hRealCam, hRolling, hStreaks;
+HWND hCapture, hReshade, hLivePreview, hProgress, hExr, hLog;
 HWND hDepthOn, hDepthFormat, hDepthNear, hDepthFar, hDepthAuto, hDepthCurve, hDepthWhite, hDepthNote;
 HWND hHfrOn, hHfrFormat, hHfrEvery, hHfrNote;
 HWND hNormalsOn, hNormalsFov, hPlateOn, hProxyOn, hIdOn, hPassNote, hMaster, hNotify, hCaptureNote, hOsdSize;
+HWND hStabilizer;
 HWND hCamFiles, hCamFolder;
 HWND hStatus;
 std::vector<HWND> g_groups;
@@ -727,6 +734,12 @@ void Load() {
         for (int i = 0; i < (int)(sizeof(kRolling) / sizeof(kRolling[0])); ++i)
             if (std::fabs(kRolling[i].ms - ms) < rb) rb = std::fabs(kRolling[i].ms - ms), ri = i;
         SendMessageW(hRolling, CB_SETCURSEL, ri, 0);
+        const double ls = ini.GetReal("EXPORT", "light_streaks", 0.0);
+        int li = 0;
+        double lb = 1e9;
+        for (int i = 0; i < (int)(sizeof(kStreaks) / sizeof(kStreaks[0])); ++i)
+            if (std::fabs(kStreaks[i].s - ls) < lb) lb = std::fabs(kStreaks[i].s - ls), li = i;
+        SendMessageW(hStreaks, CB_SETCURSEL, li, 0);
     }
 
     const std::string cap = Trim(ini.GetString("EXPORT", "capture_source", "clean"));
@@ -736,7 +749,6 @@ void Load() {
     SendMessageW(hCapture, CB_SETCURSEL, ci, 0);
     Check(hReshade, ini.GetBoolean("EXPORT", "clean_reshade", true));
     Check(hLivePreview, ini.GetBoolean("EXPORT", "clean_preview", true));
-    Check(hHideUi, ini.GetBoolean("EXPORT", "hide_ui", true));
     Check(hProgress, ini.GetBoolean("EXPORT", "progress_osd", true));
     {
         const int fpFiles = FocusPullerSetting("export_camera"), fpFolder = FocusPullerSetting("export_subfolder");
@@ -771,6 +783,7 @@ void Load() {
         Check(hProxyOn, ini.GetBoolean("PASSES", "proxy", false));
         Check(hIdOn, ini.GetBoolean("PASSES", "id_pass", false));
         Check(hNotify, ini.GetBoolean("EXPORT", "notify_done", false));
+        Check(hStabilizer, ini.GetBoolean("EXPORT", "camera_stabilizer", true));
         {
             const std::string m = Trim(ini.GetString("EXPORT", "master_16bit", "false"));
             SendMessageW(hMaster, CB_SETCURSEL, (m == "true" || m == "1" || m == "on") ? 2
@@ -871,6 +884,11 @@ bool Save() {
         ini += "; Rolling shutter: ms the sensor takes to read the image top to bottom (0 = global shutter, like a\r\n";
         ini += ";   cinema camera; 8-25 = mirrorless / phone - fast pans lean). Needs motion blur samples.\r\n";
         ini += "rolling_shutter_ms = " + std::string(ms) + "\r\n";
+        char ls[16];
+        snprintf(ls, sizeof(ls), "%.2f", kStreaks[std::max(0, Sel(hStreaks))].s);
+        ini += "; Light streaks (needs blend_linear): bright lights and bokeh keep their strength when the blur smears\r\n";
+        ini += ";   them, like on film. 0 = off, 0.5 strong, 0.75 stronger. Still parts of the image are not changed.\r\n";
+        ini += "light_streaks = " + std::string(ls) + "\r\n";
     }
     ini += "export_openexr = " + b(Checked(hExr)) + "\r\n\r\n";
     ini += "; clean   = frame taken before the game UI, your ReShade preset applied (no progress bar, no cursor)\r\n";
@@ -883,8 +901,6 @@ bool Save() {
     ini += "; clean: true = the screen shows the finished frame while exporting (DOF visible for focus pulls,\r\n";
     ini += ";   no progress bar); false = the screen shows the game with its UI but without ReShade\r\n";
     ini += "clean_preview = " + b(Checked(hLivePreview)) + "\r\n";
-    ini += "; Hide the game UI (export progress bar, buttons, spinner) while exporting\r\n";
-    ini += "hide_ui = " + b(Checked(hHideUi)) + "\r\n";
     ini += "; Export progress (%, frames, time left) in a corner of the screen - drawn by ReShade after the frame\r\n";
     ini += ";   is captured, so it is never in the video (only shown with capture clean / encode / effects)\r\n";
     ini += "progress_osd = " + b(Checked(hProgress)) + "\r\n";
@@ -896,6 +912,8 @@ bool Save() {
     ini += "camera_folder = " + b(Checked(hCamFolder)) + "\r\n";
     ini += "; When an export finishes: a sound, the taskbar button flashes and a note shows on screen\r\n";
     ini += "notify_done = " + b(Checked(hNotify)) + "\r\n";
+    ini += "; Smooth Blend camera markers: no shake in the export (the spring gets the export's time step)\r\n";
+    ini += "camera_stabilizer = " + b(Checked(hStabilizer)) + "\r\n";
     ini += "; Frames into the encoder at 16 bits per channel: auto = for 10/12-bit and lossless formats,\r\n";
     ini += ";   true = always, false = 8-bit like original EVE (use if an export fails to start)\r\n";
     ini += "master_16bit = " + std::string(kMaster[std::max(0, Sel(hMaster))].value) + "\r\n\r\n";
@@ -944,7 +962,7 @@ bool Save() {
     {
         std::ofstream f(IniPath(), std::ios::binary | std::ios::trunc);
         if (!f) {
-            MessageBoxW(g_wnd, L"Could not write EVE1G.ini. Is FiveM's folder read-only?", kApp, MB_ICONERROR);
+            MessageBoxW(g_wnd, L"Could not write EVE1G.ini. Is the game folder read-only? (A GTA V folder inside Program Files may need EVE1G-Settings run as administrator.)", kApp, MB_ICONERROR);
             return false;
         }
         f << ini;
@@ -987,7 +1005,7 @@ void Build() {
     // title
     g_page = -1;
     Make(L"STATIC", L"EVE1G", SS_LEFT, kPad, 10, 88, 30, 0, 0, g_title);
-    Hint(kPad + 92, 20, 640, 20, L"v0.9.0-beta by TEX1G  •  Rockstar Editor export with ReShade + motion blur, without the UI");
+    Hint(kPad + 92, 20, 640, 20, L"v0.11.0-beta by TEX1G  •  Rockstar Editor export with ReShade + motion blur, without the UI");
     hTabs = Make(WC_TABCONTROLW, L"", WS_TABSTOP | TCS_FOCUSNEVER, kPad, 48, kWinW - kPad * 2, 28, ID_TABS);
     for (int i = 0; i < kPages; ++i) {
         TCITEMW it{};
@@ -1067,6 +1085,10 @@ void Build() {
     Label(tm, L"Rolling shutter");
     hRolling = Combo(0, CtrlX(tm), tm.row, CtrlW(tm));
     for (const Rolling& r : kRolling) Add(hRolling, r.label);
+    tm.row += kRow;
+    Label(tm, L"Light streaks");
+    hStreaks = Combo(0, CtrlX(tm), tm.row, CtrlW(tm));
+    for (const Streaks& s : kStreaks) Add(hStreaks, s.label);
     tm.row += kRow;
     hInfo = Hint(tm.x + 12, tm.row, tm.w - 24, 36);
     tm.row += 38;
@@ -1150,8 +1172,6 @@ void Build() {
     // ================= 4. Workflow: while and after exporting, the camera data, diagnostics
     g_page = 3;
     Group wk = BeginGroup(L"While and after exporting", kLeftX, top, kColW);
-    hHideUi = CheckBox(L"Hide the game UI while exporting", wk.x + 12, wk.row, wk.w - 24);
-    wk.row += 26;
     hProgress = CheckBox(L"Show export progress on screen (%, frames, motion blur, time left) - never in the video",
                          wk.x + 12, wk.row, wk.w - 24);
     wk.row += 26;
@@ -1161,6 +1181,9 @@ void Build() {
     wk.row += 30;
     hNotify = CheckBox(L"When an export finishes: sound, taskbar flash and an on-screen note", wk.x + 12, wk.row,
                        wk.w - 24);
+    wk.row += 30;
+    hStabilizer = CheckBox(L"Camera stabilizer: no shake on slow Smooth Blend camera moves (recommended)", wk.x + 12,
+                           wk.row, wk.w - 24);
     wk.row += 30;
     Hint(wk.x + 12, wk.row, wk.w - 24, 52,
          L"The progress and the finished note are drawn by ReShade after EVE1G took the frame, so they never reach "

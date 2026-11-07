@@ -1,12 +1,21 @@
 EVE1G
 =====
-Version 0.9.0-beta, by TEX1G.
-Rockstar Editor video export for FiveM with DLSS 5 NR, ReShade, motion blur and clean (UI-free) capture.
+Version 0.11.1-beta, by TEX1G.
+Rockstar Editor video export for GTA V (Legacy) and FiveM with DLSS 5 NR, ReShade, motion blur and clean
+(UI-free) capture.
 A modified version of Extended Video Export by ali-alidoust (github.com/ali-alidoust/gta5-extended-video-export),
 Apache License 2.0 - see THIRD-PARTY-NOTICES.txt in the release.
+
+New in 0.11.1: works in GTA V story mode as well as FiveM (same files - see README.txt in the release).
+
+New in 0.11.0: Camera stabilizer (EVE1G-Settings > While and after exporting, on by default) - slow
+Smooth Blend camera moves no longer shake in the export. Idea from EVEM (Extended Video Export Modified).
+
+New in 0.10.1: Light streaks (EVE1G-Settings > Motion + Camera) - with Real camera blur on, lights and bokeh
+keep their strength when the motion blur smears them. Parts of the picture that do not move are unchanged.
 Source code: https://github.com/tex1gprod-cloud/EVE1G
 
-Files (FiveM.app\plugins)
+Files (GTA V: the game folder, next to GTA5.exe  /  FiveM: FiveM.app\plugins)
   EVE1G.asi                 the exporter (a ReShade add-on)
   EVE1G\EVE1G.ini           settings
   EVE1G\preset.json         video format (Voukoder)
@@ -14,7 +23,8 @@ Files (FiveM.app\plugins)
   EVE1G\EVE1G-Encoder.exe   Voukoder's own encoder window (advanced)
   EVE1G\EVE1G.log           what happened during the last exports
 
-Needs: ReShade with add-on support (dxgi.dll), Voukoder installed.
+Needs: ReShade with add-on support (dxgi.dll), Voukoder installed. GTA V also needs an ASI loader
+(dinput8.dll, e.g. the one that comes with Script Hook V).
 
 How it captures (capture_source = clean)
   The frame is taken at Rockstar's export point, before the game draws its UI, so there is no

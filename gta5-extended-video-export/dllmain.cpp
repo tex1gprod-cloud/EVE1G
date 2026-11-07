@@ -49,7 +49,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
 
         LOG(LL_NON, "EVE1G " EVE1G_VERSION " is enabled. Initializing...");
         if (GetModuleHandleW(L"ExtendedVideoExport.asi") != nullptr) {
-            LOG(LL_ERR, "The old ExtendedVideoExport.asi is also loaded. Delete it from the plugins folder - two "
+            LOG(LL_ERR, "The old ExtendedVideoExport.asi is also loaded. Remove it (GTA V folder / FiveM plugins folder) - two "
                         "exporters at once will break exports.");
         }
 

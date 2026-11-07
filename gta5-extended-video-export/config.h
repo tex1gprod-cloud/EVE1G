@@ -63,6 +63,7 @@ class config {
     static bool blend_linear;        // blend in linear light, like a sensor (else the display image, as before)
     static float shutter_soft;       // share of the exposure faded in / out (0 = hard shutter edges)
     static float rolling_shutter_ms; // CMOS line-by-line readout time (0 = global shutter)
+    static float light_streaks;      // 0..0.9: clipped lights count as brighter than white in the blur (needs blend_linear)
     // HFR export ([HFR] in EVE1G.ini, see hfr_pass.h)
     static bool hfr_enabled;
     static std::string hfr_format; // prores | png
@@ -89,6 +90,7 @@ class config {
     // master precision: 0 = off (8-bit), 1 = on (16-bit), 2 = auto (16-bit for 10/12-bit and lossless codecs)
     static int master_16bit;
     static bool notify_done;     // sound + taskbar flash + on-screen note when an export finishes
+    static bool camera_stabilizer; // remove the Smooth Blend camera shake in exports (stabilizer.cpp)
 
     static bool is_mod_enabled;
     static bool auto_reload_config;
@@ -140,8 +142,10 @@ class config {
                                       0.0f, 1.0f);
             rolling_shutter_ms = std::clamp(
                 static_cast<float>(config_parser->GetReal(CFG_EXPORT_SECTION, "rolling_shutter_ms", 0.0)), 0.0f, 100.0f);
+            light_streaks = std::clamp(
+                static_cast<float>(config_parser->GetReal(CFG_EXPORT_SECTION, "light_streaks", 0.0)), 0.0f, 0.9f);
             LOG(LL_NON, "Camera: ", blend_linear ? "linear-light blend" : "display blend", ", soft shutter edges ",
-                shutter_soft, ", rolling shutter ", rolling_shutter_ms, " ms");
+                shutter_soft, ", rolling shutter ", rolling_shutter_ms, " ms, light streaks ", light_streaks);
         }
         {
             hfr_enabled = config_parser->GetBoolean("HFR", "enabled", false);
@@ -188,6 +192,9 @@ class config {
                                                                                    : 0; // 8-bit unless switched on
             const std::string n = toLower(getTrimmed(config_parser, "notify_done", CFG_EXPORT_SECTION));
             notify_done = (n == "true" || n == "1" || n == "yes" || n == "on");
+            const std::string cs = toLower(getTrimmed(config_parser, "camera_stabilizer", CFG_EXPORT_SECTION));
+            camera_stabilizer = !(cs == "false" || cs == "0" || cs == "no" || cs == "off"); // on unless switched off
+            LOG(LL_NON, "Camera stabilizer (Smooth Blend shake fix): ", camera_stabilizer ? "on" : "off");
             LOG(LL_NON, "Passes: clean plate=", plate_enabled ? 1 : 0, " proxy=", proxy_enabled ? 1 : 0,
                 " normals=", normals_enabled ? 1 : 0, " id=", id_enabled ? 1 : 0, " master_16bit=", master_16bit,
                 " notify_done=", notify_done ? 1 : 0);

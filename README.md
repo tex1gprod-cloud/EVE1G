@@ -1,12 +1,27 @@
 # EVE1G
 
-**Export the Rockstar Editor with DLSS 5 neural rendering (NR).** EVE1G is a Rockstar Editor video exporter for GTA V / FiveM that records the finished DLSS 5 NR image, together with your ReShade preset, real camera motion blur and a clean, UI-free picture.
+**Export the Rockstar Editor with DLSS 5 neural rendering (NR).** EVE1G is a Rockstar Editor video exporter for GTA V (Legacy, story mode) and FiveM that records the finished DLSS 5 NR image, together with your ReShade preset, real camera motion blur and a clean, UI-free picture.
 
-Version **0.9.0-beta** · by **TEX1G**
+Version **0.11.1-beta** · by **TEX1G**
 
 EVE1G is a modified version of [Extended Video Export](https://github.com/ali-alidoust/gta5-extended-video-export) by Ali Alidoust, licensed under the [Apache License 2.0](LICENSE.md). See [NOTICE](NOTICE) for what was changed.
 
-> Looking for the ready-to-use download? Get the **EVE1G + Focus Puller** release zip — it has the built files and an install guide. This repository is the source code of EVE1G.
+> Looking for the ready-to-use download? Get the **EVE1G + Focus Puller** zip from [Releases](https://github.com/tex1gprod-cloud/EVE1G/releases). There is one for GTA V and one for FiveM, both with the built files and an install guide. This repository is the source code of EVE1G.
+
+## What's new
+
+**0.11.1**
+- Works in GTA V story mode (Legacy) as well as FiveM, with the same files.
+- Fixes the crash at start-up with the November 2026 FiveM update (`std::runtime_error` in EVE1G.asi, `Failed to create deferred context` in `EVE1G.log`). FiveM now makes a small single-threaded D3D11 device before the game's own. EVE1G skips such devices, logs a failure instead of throwing, and falls back to the device of the game's swap chain.
+
+**0.11.0**
+- Camera stabilizer: slow Smooth Blend camera moves no longer shake in the export (EVE1G Settings, on by default). Idea from EVEM (Extended Video Export Modified).
+
+**0.10.1**
+- Light streaks: with Real camera blur on, lights and bokeh keep their strength when the motion blur smears them.
+
+**0.10.0**
+- The Scaleform hook that hid the game UI was removed, so EVE1G no longer patches game code to hide the UI. The clean capture takes the frame before the UI is drawn.
 
 ## Why EVE1G: DLSS 5 NR in your exports
 
@@ -28,10 +43,12 @@ EVE1G reads the frame where it is finished instead:
 - **Passes**: depth (PNG16 / OpenEXR - read from the game's own depth buffer, with an automatic near/far range per clip; ProRes depth is not available yet), normals, clean plate (no ReShade), proxy, experimental ID pass, and HFR (every game frame on its own).
 - **Export progress on screen** (never in the video), finished notice, sidecar `.txt` with the settings of each clip.
 - **EVE1G Settings** window for everything in `EVE1G.ini`.
+- **Camera stabilizer** for slow Smooth Blend camera moves.
 - Frame-exact timing for the **Focus Puller** ReShade add-on (exported via `EVE1G_ExportTimeSeconds`).
 
 ## Requirements to run
 
+- GTA V **Legacy** (story mode, with an ASI loader such as the `dinput8.dll` from Script Hook V) or FiveM. GTA V Enhanced is not supported.
 - ReShade 6.x **with add-on support**
 - For DLSS 5 NR: an NVIDIA RTX GPU and the GTA V Upscaler mod with DLSS 5 enabled (EVE1G also works without it)
 - [Voukoder](https://www.voukoder.org/) (video encoding)
@@ -53,7 +70,7 @@ out\EVE1G\            EVE1G.ini, preset.json, EVE1G-Settings.exe, EVE1G-Encoder.
 out\reshade-shaders\  EVE1G_Depth.fx
 ```
 
-Everything is linked statically (including the C++ runtime), because FiveM ships an older `msvcp140.dll`.
+Everything is linked statically (including the C++ runtime), because FiveM ships an older `msvcp140.dll`. Only the OpenMP runtime (`vcomp140.dll`, part of the Visual C++ Redistributable) is loaded from Windows.
 
 ## Layout
 
@@ -74,4 +91,4 @@ Everything is linked statically (including the C++ runtime), because FiveM ships
 
 ## Disclaimer
 
-EVE1G is a tool for making videos with the Rockstar Editor. It is not affiliated with Rockstar Games, Take-Two or Cfx.re. Use it at your own risk; keep other game-modifying plugins out of FiveM, as its anti-cheat can ban for them.
+EVE1G is a tool for making videos with the Rockstar Editor. It is not affiliated with Rockstar Games, Take-Two or Cfx.re. Use it at your own risk. In GTA V use it in story mode only, with BattlEye off, and never take mods into GTA Online. In FiveM, keep other game-modifying plugins out of the plugins folder, as its anti-cheat can ban for them.

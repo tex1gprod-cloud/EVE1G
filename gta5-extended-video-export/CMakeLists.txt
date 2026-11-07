@@ -37,6 +37,7 @@ set(Source_Files
         "depth_pass.cpp"
         "hfr_pass.cpp"
         "passes.cpp"
+        "stabilizer.cpp"
         "export_osd.cpp"
         "dllmain.cpp"
         "encoder.cpp"

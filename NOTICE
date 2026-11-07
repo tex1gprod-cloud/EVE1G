@@ -14,6 +14,9 @@ Changes made by TEX1G (2026) include, among others:
 - export progress display, finished notice, sidecar files, naming
 - EVE1G Settings window and EVE1G.ini options
 - frame-exact timing export for the Focus Puller ReShade add-on
+- camera stabilizer for slow Smooth Blend camera moves (idea from EVEM, Extended Video Export Modified)
+- read-only reader of the Rockstar Editor's state (re_core.h; layouts from RockstarEditorPlus research, no code)
+- GTA V story mode (Legacy) support, and a start-up fix for extra single-threaded D3D11 devices
 - static build, new build scripts and many fixes
 
 All files in this repository that come from Extended Video Export

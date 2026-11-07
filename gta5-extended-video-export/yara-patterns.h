@@ -10,8 +10,4 @@ const std::string yara_wait_for_single_object = "48 89 5C 24 08 57 48 83 EC 20 8
 const std::string yara_create_texture_function = "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 30 41 8B F9 41 8B F0 48 8B DA 4C 8B F1";
 const std::string yara_linearize_texture_function = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 54 41 56 48 83 EC 20 8B 2D ?? ?? ?? ?? 65 48 8B 04 25 ?? ?? ?? ?? BF B8 01 00 00";
 const std::string yara_audio_unk01_function = "8A 81 78 4D 00 00 C0 E8 02 24 01 C3";
-// EVE1G: CScaleformMgr movie draw/update worker (Legacy builds, incl. FiveM b3407). Every Scaleform movie -
-// the export progress bar, instructional buttons, spinner - is drawn through it. Signature as documented by
-// Rockstar Editor+ (crxhvrd/REPlus, game/signatures.h, SCALEFORM_DRAWMOVIE).
-const std::string yara_scaleform_draw_movie_function = "85 C9 0F 88 ?? ?? ?? ?? 48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 56 41 57 48 8D 68 C9 48 81 EC B0 00 00 00 0F 29 70 D8";
 const std::string yara_create_export_context_function = "40 53 48 81 EC A0 00 00 00 89 11 48 8B D9 44 89 41 04 44 89 49 08 48 8D 4C 24 40 BA FF FF 00 00";

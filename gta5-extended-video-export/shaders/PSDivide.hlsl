@@ -10,6 +10,7 @@ Texture2D<float4> MyTexture : register(t0);
 
 cbuffer constantBuffer : register(b0) {
 	float4 floats; // x: samples added (fallback divisor)   y: 1 = encode linear light back to sRGB
+	               // z: light streaks (undoes PSAccumulate's expansion: y / (1 + s y))
 }
 
 float3 ToSrgb(float3 c)
@@ -21,6 +22,8 @@ float3 ToSrgb(float3 c)
 float4 main(VSOutput input) : SV_TARGET
 {
 	const float4 acc = MyTexture.Load(int3(input.position.xy, 0));
-	const float3 rgb = acc.a > 1e-6 ? acc.rgb / acc.a : acc.rgb / max(floats.x, 1.0);
+	float3 rgb = acc.a > 1e-6 ? acc.rgb / acc.a : acc.rgb / max(floats.x, 1.0);
+	if (floats.z > 0.0)
+		rgb = rgb / (1.0 + floats.z * max(rgb, 0.0));
 	return float4(floats.y > 0.5 ? ToSrgb(rgb) : rgb, 1.0);
 }

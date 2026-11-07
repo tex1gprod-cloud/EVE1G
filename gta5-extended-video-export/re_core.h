@@ -8,6 +8,9 @@
  * before use: an opcode guard on derived globals, a range check against the game image, and a montage-pointer gate on
  * the playback controller - so on a game build where a pattern drifts, the feature simply stays off.
  *
+ * Read-only: nothing here changes the game. Patterns are searched for to find where the editor keeps its state, and
+ * that state is read - no game code is patched and no game function that changes anything is called.
+ *
  * Header-only.
  */
 #pragma once
@@ -51,22 +54,10 @@ static const char *const PAT_GETMAXDISTANCE =
     "83 3D ? ? ? ? 02 4C 8B 81 F0 02 00 00 F3 41 0F 10 40 38 75 1D 84 D2 74 19 "
     "8B 81 30 06 00 00 83 F8 FF 74 0E 39 05";
 
-// CReplayMgrInternal::JumpTo(float timeMs, u32 options) - the seek every editor transport ends in.
-static const char *const PAT_JUMPTO =
-    "48 89 5C 24 08 57 48 83 EC 40 0F 29 74 24 30 0F 29 7C 24 20 "
-    "F3 0F 10 3D ? ? ? ? 8B DA BF 02 00 00 00 0F 28 C8";
-
 // CVideoProjectPlaybackController::JumpToNonDilatedTimeMs(float, u32) - loads the playback controller instance.
 static const char *const PAT_JUMPTONONDILATED =
     "40 53 48 83 EC 40 0F 29 74 24 30 32 D2 83 3D ? ? ? ? 02 0F 29 7C 24 20 41 8B D8 0F 28 F1 75";
 
-// CReplayMgrInternal::SetCursorSpeed(float) - its call at +0x38 is CReplayMgrInternal::SetNextPlayBackState(u32), the
-// editor's play / pause (RockstarEditorPlus's mapping; checked on b3751).
-static const char *const PAT_SETCURSORSPEED =
-    "48 83 EC 38 F3 0F 10 0D ? ? ? ? 0F 29 74 24 20 0F 28 F0 0F 2E F1 74 4D "
-    "0F 2F 35 ? ? ? ? 72 0A 0F 2F F1 77 05 E8 ? ? ? ? B9 00 02 00 00";
-constexpr unsigned PLAYSTATE_PLAY_FWD = 0x10001; // play | forward
-constexpr unsigned PLAYSTATE_PAUSE = 0x8;
 
 // --------------------------------------------------------------------------------------------------- layouts
 // The playback controller (CReplayCoordinator's CReplayPlaybackController): a static that outlives projects; its
@@ -246,16 +237,94 @@ static const uint8_t OP_CALL[] = { 0xE8 };                           // call rel
 // --------------------------------------------------------------------------------------------------- the addresses
 struct addresses
 {
-    uintptr_t update_smoothing = 0; // function
-    uintptr_t jump_to = 0;          // function
+    uintptr_t update_smoothing = 0; // function (only located: the clock global is read from its code)
     uintptr_t controller = 0;       // CReplayPlaybackController instance
     uintptr_t marker_slot = 0;      // IReplayMarkerStorage** global
     uintptr_t replay_time = 0;      // float, the current clip's clock in ms
     uintptr_t replay_mode = 0;      // int
-    uintptr_t set_play_state = 0;   // function: SetNextPlayBackState(u32) - play / pause (optional)
+    uintptr_t director_slot = 0;    // camReplayDirector** global (camInterface's replay director)
 };
 
-// Fills what it can. Returns how many of the six were found.
+// The replay director global: every call of camReplayDirector::GetMaxDistanceAllowedFromPlayer gets its `this` either
+// from `mov rcx,[rip+global]` or from camInterface's getter (`mov rax,[rip+global]; ret`). The calls are counted and
+// the global most of them agree on wins (5 of 5 on b3407).
+inline uintptr_t director_slot(const image &img, uintptr_t getmax)
+{
+    if (!getmax)
+        return 0;
+    uintptr_t best = 0;
+    int best_n = 0;
+    uintptr_t cand[16] = {};
+    int votes[16] = {};
+    int nc = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    uintptr_t a = img.base;
+    const uintptr_t end = img.base + img.size;
+    while (a < end && VirtualQuery(reinterpret_cast<void *>(a), &mbi, sizeof(mbi)) == sizeof(mbi))
+    {
+        const uintptr_t rb = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        uintptr_t re = rb + mbi.RegionSize;
+        if (re > end)
+            re = end;
+        if (mbi.State == MEM_COMMIT && readable(mbi.Protect) && executable(mbi.Protect) && re - rb > 32)
+        {
+            __try
+            {
+                const uint8_t *b = reinterpret_cast<const uint8_t *>(rb);
+                const size_t n = static_cast<size_t>(re - rb) - 5;
+                for (size_t i = 16; i < n; ++i)
+                {
+                    if (b[i] != 0xE8)
+                        continue;
+                    const uintptr_t target = rb + i + 5 + static_cast<intptr_t>(*reinterpret_cast<const int32_t *>(b + i + 1));
+                    if (target != getmax)
+                        continue;
+                    uintptr_t g = 0;
+                    for (int back = 3; back <= 16 && !g; ++back)
+                    {
+                        const uint8_t *p = b + i - back;
+                        if (p[0] == 0x48 && p[1] == 0x8B && p[2] == 0x0D) // mov rcx,[rip+d]
+                            g = reinterpret_cast<uintptr_t>(p) + 7 + static_cast<intptr_t>(*reinterpret_cast<const int32_t *>(p + 3));
+                        else if (back >= 5 && p[0] == 0xE8) // call getter
+                        {
+                            const uintptr_t f = reinterpret_cast<uintptr_t>(p) + 5 +
+                                                static_cast<intptr_t>(*reinterpret_cast<const int32_t *>(p + 1));
+                            if (img.contains(f) && img.contains(f + 8))
+                            {
+                                const uint8_t *q = reinterpret_cast<const uint8_t *>(f);
+                                if (q[0] == 0x48 && q[1] == 0x8B && q[2] == 0x05 && q[7] == 0xC3) // mov rax,[rip+d]; ret
+                                    g = f + 7 + static_cast<intptr_t>(*reinterpret_cast<const int32_t *>(q + 3));
+                            }
+                            if (!g)
+                                break; // another call in between: not this pattern
+                        }
+                    }
+                    if (!g || !img.contains(g))
+                        continue;
+                    int k = 0;
+                    while (k < nc && cand[k] != g)
+                        ++k;
+                    if (k == nc && nc < 16)
+                        cand[nc++] = g;
+                    if (k < nc && ++votes[k] > best_n)
+                    {
+                        best_n = votes[k];
+                        best = g;
+                    }
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+            }
+        }
+        if (re <= a)
+            break;
+        a = re;
+    }
+    return best_n >= 2 ? best : 0;
+}
+
+// Fills what it can. Returns how many were found.
 inline int resolve(const image &img, addresses &a, bool want_functions = true)
 {
     int n = 0;
@@ -263,8 +332,9 @@ inline int resolve(const image &img, addresses &a, bool want_functions = true)
     if (jnd)
         a.controller = rip_target(img, jnd, 0x40, OP_LEA_RCX, 3, 0x43);
     n += a.controller != 0;
-    if (const uintptr_t f = find(img, PAT_GETMAXDISTANCE))
-        a.replay_mode = rip_target(img, f, 0x00, OP_CMPD_IMM, 2, 0x02, 1);
+    const uintptr_t getmax = find(img, PAT_GETMAXDISTANCE);
+    if (getmax)
+        a.replay_mode = rip_target(img, getmax, 0x00, OP_CMPD_IMM, 2, 0x02, 1);
     if (!a.replay_mode && jnd) // that function hooked by another editor mod: JumpToNonDilated tests the same mode
         a.replay_mode = rip_target(img, jnd, 0x0D, OP_CMPD_IMM, 2, 0x0F, 1);
     n += a.replay_mode != 0;
@@ -281,11 +351,24 @@ inline int resolve(const image &img, addresses &a, bool want_functions = true)
     if (const uintptr_t f = find(img, PAT_GETNEXTMARKER))
         a.marker_slot = rip_target(img, f, 0x19, OP_MOV_RDI, 3, 0x1C);
     n += a.marker_slot != 0;
-    a.jump_to = find(img, PAT_JUMPTO);
-    n += a.jump_to != 0;
-    if (const uintptr_t f = find(img, PAT_SETCURSORSPEED)) // optional: not counted
-        a.set_play_state = rip_target(img, f, 0x38, OP_CALL, 1, 0x39);
+    a.director_slot = director_slot(img, getmax);
+    n += a.director_slot != 0;
     return n;
+}
+
+// The replay director object while the editor has one, else null.
+inline const uint8_t *director(const addresses &a)
+{
+    if (!a.director_slot)
+        return nullptr;
+    __try
+    {
+        return *reinterpret_cast<const uint8_t *const *>(a.director_slot);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return nullptr;
+    }
 }
 
 // --------------------------------------------------------------------------------------------------- reading

@@ -52,17 +52,6 @@ DEFINE_X64_HOOK(CreateThread, HANDLE, //
                 int32_t rsp28,        //
                 char* name);          //
 
-DEFINE_X64_HOOK(ScaleformDrawMovie, void, //
-                uint32_t movie_id,         //
-                void* p_pos,               //
-                void* p_scale,             //
-                void* p_depth,             //
-                void* p_colour,            //
-                uint32_t a,                //
-                uint32_t b,                //
-                char c,                    //
-                char d);                   //
-
 DEFINE_X64_HOOK(CreateExportContext, uint8_t, //
                 void* p_context,              //
                 uint32_t width,               //

@@ -8,6 +8,8 @@
 #include "export_osd.h"
 #include "hfr_pass.h"
 #include "passes.h"
+#include "stabilizer.h"
+extern "C" __declspec(dllexport) float EVE1G_ExportStepSeconds();
 #include "encoder.h"
 #include "hookdefs.h"
 #include "logger.h"
@@ -117,12 +119,37 @@ std::unique_ptr<YaraHelper> pYaraHelper;
 
 } // namespace
 
-void eve::OnInitDevice(reshade::api::device* device) {
-    static bool deferredContextPrepared = false;
-    if (!deferredContextPrepared) {
-        eve::PrepareDeferredContext(reinterpret_cast<ID3D11Device*>(device->get_native()));
-        deferredContextPrepared = true;
+// The deferred context and shaders must live on the GAME's device. The first device to appear is not always the
+// game's: FiveM (Nov 2026 update) makes a small single-threaded D3D11 device at start-up, and a single-threaded
+// device can't have a deferred context (CreateDeferredContext -> DXGI_ERROR_INVALID_CALL) - EVE1G used to throw on
+// that and take the game down. Now such devices are skipped, a failure is logged instead of thrown, and the game's
+// swap chain device is used if nothing else worked.
+static ID3D11Device* g_eve_prepared_device = nullptr;
+
+static bool TryPrepareDeferredContext(ID3D11Device* p_device, const char* from) {
+    if (g_eve_prepared_device || !p_device)
+        return g_eve_prepared_device != nullptr;
+    if (p_device->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED) {
+        LOG(LL_NFO, "Skipping a single-threaded D3D11 device (", from, ") - not the game's");
+        return false;
     }
+    try {
+        eve::PrepareDeferredContext(p_device);
+        g_eve_prepared_device = p_device;
+        LOG(LL_NFO, "Export resources prepared on the D3D11 device from ", from);
+        return true;
+    } catch (std::exception& ex) {
+        LOG(LL_ERR, "Could not prepare the export resources (", from, "): ", ex.what());
+        return false;
+    } catch (...) {
+        LOG(LL_ERR, "Could not prepare the export resources (", from, ")");
+        return false;
+    }
+}
+
+void eve::OnInitDevice(reshade::api::device* device) {
+    if (device && device->get_api() == reshade::api::device_api::d3d11)
+        TryPrepareDeferredContext(reinterpret_cast<ID3D11Device*>(device->get_native()), "init_device");
 }
 
 void eve::OnInitSwapChain(reshade::api::swapchain* swapchain) {
@@ -130,6 +157,10 @@ void eve::OnInitSwapChain(reshade::api::swapchain* swapchain) {
         std::lock_guard onPresentLock(mxOnPresent);
         mainSwapChain = reinterpret_cast<IDXGISwapChain*>(swapchain->get_native());
     }
+    // nothing prepared yet (every device so far was skipped): use the device of the game's swap chain
+    if (!g_eve_prepared_device && swapchain && swapchain->get_device() &&
+        swapchain->get_device()->get_api() == reshade::api::device_api::d3d11)
+        TryPrepareDeferredContext(reinterpret_cast<ID3D11Device*>(swapchain->get_device()->get_native()), "swap chain");
 }
 
 void eve::OnPresent(reshade::api::command_queue* queue, reshade::api::swapchain* swapchain,
@@ -280,12 +311,9 @@ void eve::initialize() {
         uint64_t pGetRenderTimeBase = NULL;
         uint64_t pCreateTexture = NULL;
         uint64_t pCreateThread = NULL;
-        uint64_t pScaleformDrawMovie = NULL;
         pYaraHelper->AddEntry("get_render_time_base_function", yara_get_render_time_base_function, &pGetRenderTimeBase);
         pYaraHelper->AddEntry("create_thread_function", yara_create_thread_function, &pCreateThread);
         pYaraHelper->AddEntry("create_texture_function", yara_create_texture_function, &pCreateTexture);
-        pYaraHelper->AddEntry("scaleform_draw_movie_function", yara_scaleform_draw_movie_function,
-                              &pScaleformDrawMovie);
         pYaraHelper->PerformScan();
 
         try {
@@ -303,13 +331,9 @@ void eve::initialize() {
                 LOG(LL_ERR, "Could not find the address for CreateTexture function.");
             }
 
-            if (pScaleformDrawMovie) {
-                PERFORM_X64_HOOK_REQUIRED(ScaleformDrawMovie, pScaleformDrawMovie);
-                LOG(LL_NON, "EVE1G: game UI (export progress bar) will be hidden while exporting");
-            } else {
-                LOG(LL_NON, "EVE1G: Scaleform draw not found on this game build - the export progress bar "
-                            "may appear in captures made with capture_source = present");
-            }
+            // EVE1G no longer touches the game's UI drawing (the same hooks as Extended Video Export for FiveM,
+            // nothing more). capture_source = clean takes the frame before the UI; with present, the export progress
+            // bar can be in the picture.
 
             if (pCreateThread) {
                 PERFORM_X64_HOOK_REQUIRED(CreateThread, pCreateThread);
@@ -492,6 +516,7 @@ void eve::OnBindRenderTargets(reshade::api::command_list* cmd_list, uint32_t cou
             ::exportContext->total_frame_num++;
         } catch (std::exception&) {
             LOG(LL_ERR, "Reading video frame from D3D Device failed.");
+            stabilizer::End();
             LOG_CALL(LL_DBG, encodingSession.reset());
             LOG_CALL(LL_DBG, ::exportContext.reset());
         }
@@ -676,7 +701,7 @@ void Bind(UINT height, DXGI_FORMAT source) {
     p[4] = g_linear ? 1.0f : 0.0f;
     p[5] = static_cast<float>(height);
     p[6] = blur ? 0.5f / (static_cast<float>(config::motion_blur_samples) * angle) : 0.0f; // half a sample step
-    p[7] = 0.0f;
+    p[7] = g_linear ? config::light_streaks : 0.0f; // light streaks: bright lights keep their strength in the blur
     pDContext->Unmap(pAccParamsBuffer.Get(), 0);
     pDContext->PSSetConstantBuffers(0, 1, pAccParamsBuffer.GetAddressOf());
 }
@@ -800,6 +825,7 @@ void AccumulateAndEmit(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, ID3
         ++g_framesCaptured;
     } catch (std::exception& ex) {
         LOG(LL_ERR, "EVE1G: reading the video frame failed: ", ex.what());
+        stabilizer::End();
         LOG_CALL(LL_DBG, encodingSession.reset());
         LOG_CALL(LL_DBG, ::exportContext.reset());
         g_capturePending = false;
@@ -923,6 +949,8 @@ void Resolve(ID3D11DeviceContext* pContext) {
     }
     static_cast<float*>(m.pData)[0] = static_cast<float>(k);
     static_cast<float*>(m.pData)[1] = exposure::g_linear ? 1.0f : 0.0f;
+    static_cast<float*>(m.pData)[2] = exposure::g_linear ? config::light_streaks : 0.0f;
+    static_cast<float*>(m.pData)[3] = 0.0f;
     pDContext->Unmap(pDivideConstantBuffer.Get(), 0);
     pDContext->PSSetConstantBuffers(0, 1, pDivideConstantBuffer.GetAddressOf());
     pDContext->PSSetShaderResources(0, 1, srvAcc.GetAddressOf());
@@ -1382,8 +1410,8 @@ std::pair<uint32_t, uint32_t> eve::CaptureSize(ID3D11Texture2D* pVideoEncode, ui
 
 // =====================================================================================================================
 //  EVE1G shot naming + settings sidecar
-//    EVE1G.ini (top section):  project = Jetsam   shot = shot03   take = 0 (0 = next free number)   sidecar = true
-//    -> D:\EVE_CLIPS\Jetsam_shot03_t02_24fps_16s_180.mov  +  Jetsam_shot03_t02_24fps_16s_180.txt
+//    EVE1G.ini (top section):  project = MyProject   shot = shot03   take = 0 (0 = next free number)   sidecar = true
+//    -> D:\EVE_CLIPS\MyProject_shot03_t02_24fps_16s_180.mov  +  MyProject_shot03_t02_24fps_16s_180.txt
 //    Without project and shot the old style is kept: EVE1G-20261006191500.mov
 // =====================================================================================================================
 namespace {
@@ -1614,6 +1642,9 @@ void eve::WriteSidecarStart(const std::string& videoFile, uint32_t width, uint32
       << (config::motion_blur_samples && config::rolling_shutter_ms > 0.0f
               ? ", rolling shutter " + std::to_string(static_cast<int>(std::lround(config::rolling_shutter_ms))) + " ms"
               : std::string(", global shutter"))
+      << (config::motion_blur_samples && config::blend_linear && config::light_streaks > 0.0f
+              ? ", light streaks " + std::to_string(static_cast<int>(std::lround(config::light_streaks * 100))) + "%"
+              : std::string())
       << "\r\n"
       << "Game renders at: " << gameFps << " fps\r\n"
       << "Audio          : " << (audio ? "exported" : "OFF (game fps above 60 - record sound separately)") << "\r\n"
@@ -2048,6 +2079,9 @@ HRESULT IMFSinkWriterHooks::SetInputMediaType::Implementation(IMFSinkWriter* pTh
                 depth::Begin(exrOutputPath, exportWidth, exportHeight, fps_num, fps_den);
                 hfr::Begin(exrOutputPath, exportWidth, exportHeight, fps_num, fps_den);
                 passes::Begin(exrOutputPath, exportWidth, exportHeight, fps_num, fps_den, g_master16);
+                if (config::camera_stabilizer && isCustomFrameRateSupported) {
+                    stabilizer::Begin(EVE1G_ExportStepSeconds());
+                }
                 if (passes::PlateWanted()) {
                     plate::Create(::exportContext->p_device.Get(), exportWidth, exportHeight, g_master16);
                 } else {
@@ -2059,6 +2093,7 @@ HRESULT IMFSinkWriterHooks::SetInputMediaType::Implementation(IMFSinkWriter* pTh
                 eve::WriteSidecarStart(filename, exportWidth, exportHeight, !::exportContext->is_audio_export_disabled);
             } catch (std::exception& ex) {
                 LOG(LL_ERR, ex.what());
+                stabilizer::End();
                 LOG_CALL(LL_DBG, encodingSession.reset());
                 LOG_CALL(LL_DBG, ::exportContext.reset());
                 return MF_E_INVALIDMEDIATYPE;
@@ -2104,6 +2139,7 @@ HRESULT IMFSinkWriterHooks::WriteSample::Implementation(IMFSinkWriter* pThis, DW
             }
         } catch (std::exception& ex) {
             LOG(LL_ERR, ex.what());
+            stabilizer::End();
             LOG_CALL(LL_DBG, encodingSession.reset());
             LOG_CALL(LL_DBG, ::exportContext.reset());
         }
@@ -2124,6 +2160,7 @@ HRESULT IMFSinkWriterHooks::Finalize::Implementation(IMFSinkWriter* pThis) {
         LOG(LL_ERR, ex.what());
     }
 
+    LOG_CALL(LL_DBG, stabilizer::End());
     LOG_CALL(LL_DBG, encodingSession.reset());
     LOG_CALL(LL_DBG, ::exportContext.reset());
     LOG_CALL(LL_DBG, depth::End());
@@ -2256,16 +2293,6 @@ HANDLE GameHooks::CreateThread::Implementation(void* pFunc, void* pParams, int32
         " r9d:", Logger::hex(r9d, 4), " rsp20:", rsp20, " rsp28:", rsp28, " name:", name ? name : "<NULL>");
     POST();
     return result;
-}
-
-// EVE1G: while an export runs, skip every Scaleform movie (progress bar, "Cancel" button, spinner), so the
-// finished back buffer that capture_source = present reads has no UI on it. Outside an export: untouched.
-void GameHooks::ScaleformDrawMovie::Implementation(uint32_t movie_id, void* p_pos, void* p_scale, void* p_depth,
-                                                   void* p_colour, uint32_t a, uint32_t b, char c, char d) {
-    if (::exportContext && config::hide_ui_during_export) {
-        return;
-    }
-    OriginalFunc(movie_id, p_pos, p_scale, p_depth, p_colour, a, b, c, d);
 }
 
 float GameHooks::GetRenderTimeBase::Implementation(int64_t choice) {
@@ -2459,6 +2486,7 @@ void* GameHooks::CreateTexture::Implementation(void* rcx, char* name, const uint
 
             } catch (std::exception& ex) {
                 LOG(LL_ERR, ex.what());
+                stabilizer::End();
                 LOG_CALL(LL_DBG, encodingSession.reset());
                 LOG_CALL(LL_DBG, ::exportContext.reset());
             }
@@ -2611,6 +2639,8 @@ ComPtr<ID3D11Texture2D> eve::divideBuffer(ComPtr<ID3D11Device> pDevice, ComPtr<I
     const auto floats = static_cast<float*>(mapped.pData);
     floats[0] = static_cast<float>(k);
     floats[1] = exposure::g_linear ? 1.0f : 0.0f; // back from linear light to the display image
+    floats[2] = exposure::g_linear ? config::light_streaks : 0.0f; // undo the light-streaks boost after blending
+    floats[3] = 0.0f;
     /*floats[0] = 1.0f;*/
     LOG_CALL(LL_DBG, pDContext->Unmap(pDivideConstantBuffer.Get(), 0));
 

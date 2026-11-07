@@ -5,6 +5,10 @@
 //    dark edges blend like a real exposure (blending the display image directly darkens and dulls the blur)
 //  - shutter: each moment counts by how open the shutter is then - a hard box, or soft edges like a real rotary
 //    shutter whose blade takes a moment to sweep across the gate
+//  - light streaks (optional): the game image stops at white, so a street light or a bokeh disc is only "1.0"
+//    bright and its streak comes out dim and grey. With light streaks, values near white are expanded back to
+//    brighter-than-white before they are added (x / (1 - s x)) and PSDivide compresses the result again
+//    (y / (1 + s y)) - a pixel that does not move comes out exactly as it went in, a moving light keeps its punch
 //  - rolling shutter (optional): each row of the image is exposed a little later than the row above it, like a
 //    CMOS sensor read out line by line - fast pans lean, spinning things bend
 // Each pixel also adds its weight to alpha, and PSDivide divides by it.
@@ -21,6 +25,7 @@ cbuffer params : register(b0)
 	float4 p0; // x: this sample's time in the frame interval (0..1)   y: exposure (shutter angle / 360)
 	           // z: rolling-shutter readout (share of the interval)  w: soft edges (share of the exposure faded)
 	float4 p1; // x: 1 = decode sRGB to linear light   y: image height   z: half a sample step, in exposures
+	           // w: light streaks (0 = off)
 };
 
 float3 ToLinear(float3 c)
@@ -42,6 +47,8 @@ float4 main(VSOutput input) : SV_TARGET
 	float w = 1.0;
 	if (p0.w > 0.0)
 		w = saturate((min(u, 1.0 - u) + p1.z) / p0.w);
-	const float3 rgb = p1.x > 0.5 ? ToLinear(c.rgb) : c.rgb;
+	float3 rgb = p1.x > 0.5 ? ToLinear(c.rgb) : c.rgb;
+	if (p1.w > 0.0)
+		rgb = rgb / max(1.0 - p1.w * saturate(rgb), 1e-3);
 	return float4(rgb * w, w);
 }
