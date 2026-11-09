@@ -1,14 +1,19 @@
 # EVE1G
 
-**Export the Rockstar Editor with DLSS 5 neural rendering (NR).** EVE1G is a Rockstar Editor video exporter for GTA V (Legacy, story mode) and FiveM that records the finished DLSS 5 NR image, together with your ReShade preset, real camera motion blur and a clean, UI-free picture.
+**Export the Rockstar Editor with DLSS 5 neural rendering (NR).** EVE1G is a Rockstar Editor video exporter for GTA V (Legacy, story mode) and FiveM that records the finished DLSS 5 NR image, together with your ReShade preset, motion blur and a clean, UI-free picture.
 
-Version **0.11.1-beta** · by **TEX1G**
+Version **0.11.2-beta** · by **TEX1G**
 
 EVE1G is a modified version of [Extended Video Export](https://github.com/ali-alidoust/gta5-extended-video-export) by Ali Alidoust, licensed under the [Apache License 2.0](LICENSE.md). See [NOTICE](NOTICE) for what was changed.
 
 > Looking for the ready-to-use download? Get the **EVE1G + Focus Puller** zip from [Releases](https://github.com/tex1gprod-cloud/EVE1G/releases). There is one for GTA V and one for FiveM, both with the built files and an install guide. This repository is the source code of EVE1G.
 
 ## What's new
+
+**0.11.2**
+- New EVE1G Settings window: five pages (Output, Motion, Capture, Passes, Camera data), drawn with its own monochrome controls (GDI+), the same on Windows 10 and 11.
+- Options that were experimental or unfinished are no longer in the window: real camera blur (linear-light blend, soft shutter), light streaks, HFR export, the ID pass, ProRes depth and the Effects / Legacy capture modes. Saving in the window writes them as off. The code is still in EVE1G; `EVE1G.ini` can switch it on for testing.
+- A cancelled export is closed: Rockstar never calls `IMFSinkWriter::Finalize` for it, so EVE1G used to keep it open until the game restarted (the progress box stayed up and Focus Puller followed the stopped export clock). A watchdog in the present hook now closes an export once the game has stopped asking for export time steps for 90 s (and 900+ frames). The video keeps the frames written so far.
 
 **0.11.1**
 - Works in GTA V story mode (Legacy) as well as FiveM, with the same files.
@@ -39,8 +44,8 @@ EVE1G reads the frame where it is finished instead:
 
 - Runs as a **ReShade add-on**: your ReShade preset (DOF, grade, every pass) is in the export.
 - **Clean capture**: the frame is taken before the game draws its UI — no export progress bar, no cursor.
-- **Real motion blur**: every video frame is made of several game frames, accumulated in linear light, with shutter angle, soft shutter and optional rolling shutter.
-- **Passes**: depth (PNG16 / OpenEXR - read from the game's own depth buffer, with an automatic near/far range per clip; ProRes depth is not available yet), normals, clean plate (no ReShade), proxy, experimental ID pass, and HFR (every game frame on its own).
+- **Real motion blur**: every video frame is made of several game frames, with shutter angle and optional rolling shutter.
+- **Passes**: depth (PNG16 / OpenEXR - read from the game's own depth buffer, with an automatic near/far range per clip), normals, clean plate (no ReShade) and proxy.
 - **Export progress on screen** (never in the video), finished notice, sidecar `.txt` with the settings of each clip.
 - **EVE1G Settings** window for everything in `EVE1G.ini`.
 - **Camera stabilizer** for slow Smooth Blend camera moves.

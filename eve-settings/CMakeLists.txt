@@ -1,6 +1,7 @@
 set(PROJECT_NAME eve-settings)
 
 # EVE1G-Settings.exe - the settings window (codec presets, fps, motion blur, shutter, capture source).
+# Drawn with GDI+ (gdiplus), dark title bar (dwmapi), dark dropdown lists (uxtheme).
 add_executable(${PROJECT_NAME} WIN32
         "settings.cpp"
         "../inih/ini.c"
@@ -22,4 +23,5 @@ endif()
 target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../inih" "${CMAKE_CURRENT_SOURCE_DIR}/../inih/cpp"
                            "${CMAKE_CURRENT_SOURCE_DIR}/../voukoder")
 find_package(nlohmann_json CONFIG REQUIRED)
-target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json comctl32 shell32 ole32 user32 gdi32)
+target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json comctl32 shell32 ole32 user32 gdi32
+                      gdiplus dwmapi uxtheme)

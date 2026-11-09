@@ -539,6 +539,8 @@ void eve::OnBindRenderTargets(reshade::api::command_list* cmd_list, uint32_t cou
 //                               before any HUD - but anything applied at Present (ReShade, possibly DLSS 5) is missing.
 //    capture_source = legacy  : original EVE code above, for comparison.
 // =====================================================================================================================
+static void EndExport(bool finished); // closes an export (defined at IMFSinkWriter::Finalize)
+
 namespace {
 std::atomic<reshade::api::effect_runtime*> g_runtime{nullptr};
 std::atomic<bool> g_capturePending{false};
@@ -546,6 +548,10 @@ std::atomic<uint32_t> g_backBufferWidth{0};
 std::atomic<uint32_t> g_backBufferHeight{0};
 uint64_t g_framesQueued = 0;
 uint64_t g_framesCaptured = 0;
+// Export time steps the game asked for (one per rendered game frame of an export), and the count when this export
+// began - the watchdog in OnReshadePresent closes an export that stopped asking (cancelled in the editor).
+std::atomic<uint64_t> g_timeSteps{0};
+uint64_t g_timeStepsAtStart = 0;
 uint64_t g_framesWithoutPresent = 0;
 bool g_toldSizeMismatch = false;
 bool g_toldNoBuffers = false;
@@ -1250,6 +1256,28 @@ void eve::OnReshadeBeginEffects(reshade::api::effect_runtime* runtime, reshade::
 
 void eve::OnReshadePresent(reshade::api::effect_runtime* runtime) {
     g_runtime = runtime;               // the runtime that actually presents
+    {
+        // A cancelled export never reaches IMFSinkWriter::Finalize, so it used to stay open: the progress box stayed
+        // up and Focus Puller kept following the stopped export clock instead of the editor. While an export runs the
+        // game asks for an export time step every frame it renders; once it has rendered export frames and then
+        // keeps presenting for 90 s (and 900+ frames) without asking for one, the export is over - close it.
+        static uint64_t seen = 0;
+        static double seen_at = 0.0;
+        static int presents = 0;
+        const uint64_t steps = g_timeSteps.load();
+        const double now = static_cast<double>(GetTickCount64()) / 1000.0;
+        if (!::exportContext || steps != seen) {
+            seen = steps;
+            seen_at = now;
+            presents = 0;
+        } else if (steps > g_timeStepsAtStart && ++presents >= 900 && now - seen_at >= 90.0) {
+            LOG(LL_WRN, "EVE1G: the export stopped without finishing (cancelled in the editor?) - closing it after ",
+                g_framesCaptured, " captured game frame(s); the video holds the frames written so far");
+            EndExport(false);
+            seen = g_timeSteps.load();
+            presents = 0;
+        }
+    }
     depth::OnPresent(runtime, ::exportContext != nullptr); // depth technique on while a depth export runs
     exportosd::OnPresent(::exportContext != nullptr);
     if (g_lastFinishRes) {
@@ -2147,8 +2175,9 @@ HRESULT IMFSinkWriterHooks::WriteSample::Implementation(IMFSinkWriter* pThis, DW
     return S_OK;
 }
 
-HRESULT IMFSinkWriterHooks::Finalize::Implementation(IMFSinkWriter* pThis) {
-    PRE();
+// Closes the export: the video file is finished (so the frames written so far play) and everything switched on for
+// the export is switched off again. finished = Rockstar finalized the video; false = it stopped without doing so.
+static void EndExport(bool finished) {
     std::lock_guard<std::mutex> sessionLock(mxSession);
     try {
         if (encodingSession != NULL) {
@@ -2169,9 +2198,16 @@ HRESULT IMFSinkWriterHooks::Finalize::Implementation(IMFSinkWriter* pThis) {
     plate::Release();
     LOG_CALL(LL_DBG, eve::ResetCaptureStats());
     if (!g_lastExportFile.empty()) {
-        eve::NotifyExportDone(g_lastExportFile);
+        if (finished) {
+            eve::NotifyExportDone(g_lastExportFile);
+        }
         g_lastExportFile.clear();
     }
+}
+
+HRESULT IMFSinkWriterHooks::Finalize::Implementation(IMFSinkWriter* pThis) {
+    PRE();
+    EndExport(true);
     POST();
     return S_OK;
 }
@@ -2301,6 +2337,7 @@ float GameHooks::GetRenderTimeBase::Implementation(int64_t choice) {
     const float result = 1000.0f * static_cast<float>(fps.second) /
                          (static_cast<float>(fps.first) * (static_cast<float>(config::motion_blur_samples) + 1));
     // float result = 1000.0f / 60.0f;
+    ++g_timeSteps;
     LOG(LL_NFO, "Time step: ", result);
     POST();
     return result;
@@ -2384,6 +2421,7 @@ void CreateNewExportContext() {
     NOT_NULL(encodingSession, "Could not create the session");
     ::exportContext.reset(new ExportContext());
     NOT_NULL(::exportContext, "Could not create export context");
+    g_timeStepsAtStart = g_timeSteps.load();
 }
 
 void* GameHooks::CreateTexture::Implementation(void* rcx, char* name, const uint32_t r8d, uint32_t width,

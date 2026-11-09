@@ -1,3 +1,3 @@
 #pragma once
 // EVE1G version, shown in ReShade's Add-ons tab, the log and EVE1G Settings.
-#define EVE1G_VERSION "0.11.1-beta"
+#define EVE1G_VERSION "0.11.2-beta"

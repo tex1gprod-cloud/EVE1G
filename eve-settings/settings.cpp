@@ -1,34 +1,50 @@
 // EVE1G Settings - the settings window for EVE1G.ini and preset.json.
 // Lives in plugins\EVE1G next to those files. Changes apply to the next export (EVE1G re-reads them every time).
+// The window draws its own dark, purple-accented controls (GDI+), so it looks the same on Windows 10 and 11.
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <CommCtrl.h>
 #include <ShlObj.h>
 #include <shellapi.h>
+#include <Uxtheme.h>
+#include <dwmapi.h>
+#include <objidl.h>
+
+#include <algorithm>
+namespace Gdiplus {
+using std::max;
+using std::min;
+} // namespace Gdiplus
+#include <gdiplus.h>
 
 #include <INIReader.h>
 #include <wrl/client.h>
 #include "VoukoderTypeLib_h.h"
 #include <nlohmann/json.hpp>
+#include "../gta5-extended-video-export/version.h"
 
-#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "uxtheme.lib")
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 namespace {
 
 const wchar_t* kApp = L"EVE1G";
+const wchar_t* kGitHub = L"https://github.com/tex1gprod-cloud/EVE1G";
 
 // ---------------------------------------------------------------------------------------------------- codec presets
 // Grouped by what the file is for, not by codec name.
@@ -112,19 +128,11 @@ const Rolling kRolling[] = {
     {L"16 ms - mirrorless / DSLR", 16}, {L"25 ms - phone", 25},
 };
 
-struct Streaks { const wchar_t* label; double s; };
-const Streaks kStreaks[] = {
-    {L"Off - lights blend as the screen shows them", 0.0}, {L"Strong - lights keep their punch", 0.5},
-    {L"Stronger - bright streaks and bokeh trails", 0.75},
-};
-
 struct Choice { const wchar_t* label; const char* value; };
 const Choice kCapture[] = {
-    {L"Clean  -  before the game UI, ReShade applied  [recommended]", "clean"},
-    {L"Present  -  what is on screen (progress bar + cursor)", "present"},
-    {L"Encode  -  Rockstar's export image, no ReShade", "encode"},
-    {L"Effects  -  experimental", "effects"},
-    {L"Legacy  -  original EVE (black with the Upscaler)", "legacy"},
+    {L"Clean  -  before the game UI, with ReShade  [recommended]", "clean"},
+    {L"Screen  -  what is on screen (progress bar + cursor)", "present"},
+    {L"Rockstar  -  the editor's own export image, no ReShade", "encode"},
 };
 const Choice kLog[] = {{L"error", "error"}, {L"warn", "warn"}, {L"info", "info"}, {L"debug", "debug"}};
 const Choice kHfrFormat[] = {
@@ -137,44 +145,41 @@ const Every kHfrEvery[] = {
 };
 
 const Choice kDepthFormat[] = {
-    {L"PNG 16-bit sequence  -  lossless, for AE / Premiere / Resolve  [recommended]", "png16"},
-    {L"ProRes 4444 video  -  not available yet, writes PNG instead", "prores"},
-    {L"OpenEXR float sequence  -  real distance in metres (Nuke / Fusion)", "exr"},
+    {L"PNG 16-bit  -  lossless sequence for AE / Premiere / Resolve  [recommended]", "png16"},
+    {L"OpenEXR float  -  real distance in metres (Nuke / Fusion)", "exr"},
 };
 const Choice kMaster[] = {
-    {L"8-bit  -  as original EVE  [default]", "false"},
-    {L"Auto  -  16-bit into 10-bit / lossless formats  (new, testing)", "auto"},
-    {L"16-bit always  -  smoothest gradients  (new, testing)", "true"},
+    {L"8-bit  -  as original EVE, the safest", "false"},
+    {L"Auto  -  16-bit into 10-bit and lossless formats", "auto"},
+    {L"16-bit  -  always, the smoothest gradients", "true"},
 };
 const Choice kOsdSize[] = {
-    {L"Normal  (grows with the screen: 2x at 4K)", "1"},
+    {L"Normal  -  grows with the screen, 2x at 4K", "1"},
     {L"Large", "1.5"},
     {L"Extra large", "2"},
 };
-const Choice kDepthCurve[] = {{L"Log - more detail close up", "log"}, {L"Linear", "linear"}};
+const Choice kDepthCurve[] = {{L"Log  -  detail close up", "log"}, {L"Linear", "linear"}};
 const Choice kDepthWhite[] = {{L"White = near", "near"}, {L"White = far", "far"}};
 
 // ------------------------------------------------------------------------------------------------------------ state
 std::string g_dir;   // folder of this exe, with trailing backslash
 HWND g_wnd;
-HFONT g_font, g_bold, g_title;
+HFONT g_font, g_small, g_semi, g_cardTitle, g_pageTitle, g_brand, g_tag, g_num;
 double g_scale = 1.0;
 HWND hOut, hProject, hShot, hTake, hSidecar, hPreview;
 HWND hCodec, hQuality, hQualityLabel, hBitrate, hBitrateLabel, hNote, hFormats;
-HWND hFps, hFpsCustom, hSamples, hShutter, hInfo, hRealCam, hRolling, hStreaks;
-HWND hCapture, hReshade, hLivePreview, hProgress, hExr, hLog;
+HWND hFps, hFpsCustom, hSamples, hShutter, hInfo, hRolling;
+HWND hCapture, hReshade, hLivePreview, hProgress, hLog;
 HWND hDepthOn, hDepthFormat, hDepthNear, hDepthFar, hDepthAuto, hDepthCurve, hDepthWhite, hDepthNote;
-HWND hHfrOn, hHfrFormat, hHfrEvery, hHfrNote;
-HWND hNormalsOn, hNormalsFov, hPlateOn, hProxyOn, hIdOn, hPassNote, hMaster, hNotify, hCaptureNote, hOsdSize;
+HWND hNormalsOn, hNormalsFov, hPlateOn, hProxyOn, hPassNote, hMaster, hNotify, hCaptureNote, hOsdSize;
 HWND hStabilizer;
 HWND hCamFiles, hCamFolder;
-HWND hStatus;
-std::vector<HWND> g_groups;
-std::vector<HWND> g_hints;
+HWND hStatus, hGitHub;
+std::unordered_map<HWND, bool> g_toggle;   // the on / off state of every switch
 
 enum : int {
     ID_BROWSE = 100, ID_FPS, ID_SAMPLES, ID_SHUTTER, ID_CODEC, ID_SAVE, ID_CLOSE, ID_VOUKODER, ID_OPENFOLDER,
-    ID_OPENLOG, ID_NAMING, ID_CAPTURE, ID_TESTFORMATS, ID_DEPTH, ID_TABS
+    ID_OPENLOG, ID_NAMING, ID_CAPTURE, ID_TESTFORMATS, ID_DEPTH, ID_GITHUB, ID_NAV = 200
 };
 
 std::wstring W(const std::string& s) {
@@ -204,8 +209,19 @@ std::string Trim(std::string s) {
     return s.substr(i);
 }
 int Sel(HWND h) { return (int)SendMessageW(h, CB_GETCURSEL, 0, 0); }
-bool Checked(HWND h) { return SendMessageW(h, BM_GETCHECK, 0, 0) == BST_CHECKED; }
-void Check(HWND h, bool on) { SendMessageW(h, BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0); }
+bool Checked(HWND h) {
+    const auto it = g_toggle.find(h);
+    return it != g_toggle.end() ? it->second : SendMessageW(h, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+void Check(HWND h, bool on) {
+    const auto it = g_toggle.find(h);
+    if (it == g_toggle.end()) {
+        SendMessageW(h, BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0);
+    } else if (it->second != on) {
+        it->second = on;
+        InvalidateRect(h, nullptr, FALSE);
+    }
+}
 
 // The preset combo only lists formats that work on this PC; item data = index into kCodecs.
 int CodecSel() {
@@ -226,69 +242,370 @@ void SelectCodec(int idx) {
     SendMessageW(hCodec, CB_SETCURSEL, custom, 0);
 }
 
+// ------------------------------------------------------------------------------------------------------------- theme
+// Monochrome: black, white and greys only. White marks what is on / chosen / the main action.
+// Every control is drawn here, not by Windows, so it looks the same on Windows 10 and 11.
+namespace col {
+constexpr COLORREF bg = RGB(17, 17, 18);          // page
+constexpr COLORREF side = RGB(10, 10, 11);        // sidebar
+constexpr COLORREF foot = RGB(17, 17, 18);        // bottom bar (same as the page)
+constexpr COLORREF card = RGB(26, 26, 28);
+constexpr COLORREF cardLine = RGB(33, 33, 36);
+constexpr COLORREF input = RGB(37, 37, 40);
+constexpr COLORREF inputLine = RGB(37, 37, 40);   // no visible border at rest
+constexpr COLORREF inputHover = RGB(70, 70, 75);
+constexpr COLORREF button = RGB(40, 40, 43);
+constexpr COLORREF buttonHover = RGB(54, 54, 58);
+constexpr COLORREF accent = RGB(242, 242, 243);   // white: on, chosen, the main action
+constexpr COLORREF accentHi = RGB(255, 255, 255);
+constexpr COLORREF accentLo = RGB(208, 208, 212);
+constexpr COLORREF accentSoft = RGB(50, 50, 54);  // chosen row in a list, tags
+constexpr COLORREF accentText = RGB(236, 236, 238);
+constexpr COLORREF ink = RGB(12, 12, 13);         // text and knobs on white
+constexpr COLORREF text = RGB(242, 242, 243);
+constexpr COLORREF text2 = RGB(160, 160, 166);
+constexpr COLORREF hint = RGB(118, 118, 124);
+constexpr COLORREF dim = RGB(74, 74, 79);         // disabled
+constexpr COLORREF track = RGB(56, 56, 60);       // switch, off
+constexpr COLORREF line = RGB(36, 36, 39);
+constexpr COLORREF good = RGB(242, 242, 243);
+constexpr COLORREF bad = RGB(255, 120, 120);
+constexpr COLORREF navHover = RGB(24, 24, 26);
+constexpr COLORREF navSel = RGB(242, 242, 243);
+} // namespace col
+HBRUSH g_brBg, g_brSide, g_brFoot, g_brCard, g_brInput, g_brSoft;
+
+HBRUSH BrushOf(COLORREF c) {
+    if (c == col::side) return g_brSide;
+    if (c == col::card) return g_brCard;
+    if (c == col::input) return g_brInput;
+    return g_brBg;
+}
+
+Gdiplus::Color GC(COLORREF c, BYTE a = 255) { return Gdiplus::Color(a, GetRValue(c), GetGValue(c), GetBValue(c)); }
+
+// Anti-aliased rounded rectangle, optionally with a 1 px border.
+void Round(HDC dc, const RECT& r, float radius, COLORREF fill, COLORREF border = CLR_INVALID, float bw = 1.0f) {
+    Gdiplus::Graphics g(dc);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);   // pixel i covers [i, i+1]: borders stay inside the rect
+    const float in = border != CLR_INVALID ? bw / 2.0f : 0.0f;
+    const float x = r.left + in, y = r.top + in;
+    const float w = (r.right - r.left) - 2 * in, h = (r.bottom - r.top) - 2 * in;
+    const float d = std::min(radius * 2.0f, std::min(w, h));
+    Gdiplus::GraphicsPath p;
+    p.AddArc(x, y, d, d, 180, 90);
+    p.AddArc(x + w - d, y, d, d, 270, 90);
+    p.AddArc(x + w - d, y + h - d, d, d, 0, 90);
+    p.AddArc(x, y + h - d, d, d, 90, 90);
+    p.CloseFigure();
+    if (fill != CLR_INVALID) {
+        Gdiplus::SolidBrush b(GC(fill));
+        g.FillPath(&b, &p);
+    }
+    if (border != CLR_INVALID) {
+        Gdiplus::Pen pen(GC(border), bw);
+        g.DrawPath(&pen, &p);
+    }
+}
+
+// spacing = extra pixels between letters (the wide, uppercase headings)
+void Txt(HDC dc, const std::wstring& s, RECT r, HFONT f, COLORREF c,
+         UINT fmt = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX, int spacing = 0) {
+    const HGDIOBJ o = SelectObject(dc, f);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, c);
+    const int old = SetTextCharacterExtra(dc, spacing);
+    DrawTextW(dc, s.c_str(), (int)s.size(), &r, fmt);
+    SetTextCharacterExtra(dc, old);
+    SelectObject(dc, o);
+}
+int TextW(HDC dc, const std::wstring& s, HFONT f, int spacing = 0) {
+    const HGDIOBJ o = SelectObject(dc, f);
+    const int old = SetTextCharacterExtra(dc, spacing);
+    SIZE sz{};
+    GetTextExtentPoint32W(dc, s.c_str(), (int)s.size(), &sz);
+    SetTextCharacterExtra(dc, old);
+    SelectObject(dc, o);
+    return sz.cx;
+}
+std::wstring Upper(std::wstring s) {
+    if (!s.empty()) CharUpperBuffW(s.data(), (DWORD)s.size());
+    return s;
+}
+
+// ------------------------------------------------------------------------------------------------------------- icons
+// Simple line icons, drawn on a 24 x 24 grid.
+enum Ico : int {
+    I_Export, I_Motion, I_Frame, I_Layers, I_Video,                     // the five pages
+    I_Folder, I_Film, I_Camera, I_Monitor, I_Doc, I_Pulse, I_Sliders,   // cards and buttons
+    I_Refresh, I_Check, I_Arrow
+};
+
+void Icon(HDC dc, int id, int x, int y, int size, COLORREF c) {
+    if (id < 0) return;
+    using namespace Gdiplus;
+    Graphics g(dc);
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    g.SetPixelOffsetMode(PixelOffsetModeHalf);
+    const float k = size / 24.0f;
+    g.TranslateTransform((float)x, (float)y);
+    g.ScaleTransform(k, k);
+    Pen pen(GC(c), std::max(1.4f, 1.6f * (float)g_scale) / k);
+    pen.SetStartCap(LineCapRound);
+    pen.SetEndCap(LineCapRound);
+    pen.SetLineJoin(LineJoinRound);
+    auto L = [&](float a, float b, float cc, float d) { g.DrawLine(&pen, a, b, cc, d); };
+    auto P = [&](std::initializer_list<float> v, bool closed) {
+        std::vector<PointF> p;
+        for (auto i = v.begin(); i != v.end(); i += 2) p.emplace_back(*i, *(i + 1));
+        if (closed) g.DrawPolygon(&pen, p.data(), (INT)p.size());
+        else g.DrawLines(&pen, p.data(), (INT)p.size());
+    };
+    auto R = [&](float l, float t, float r, float b, float rad) {
+        GraphicsPath p;
+        const float d = rad * 2;
+        p.AddArc(l, t, d, d, 180, 90);
+        p.AddArc(r - d, t, d, d, 270, 90);
+        p.AddArc(r - d, b - d, d, d, 0, 90);
+        p.AddArc(l, b - d, d, d, 90, 90);
+        p.CloseFigure();
+        g.DrawPath(&pen, &p);
+    };
+    auto C = [&](float cx, float cy, float r) { g.DrawEllipse(&pen, cx - r, cy - r, 2 * r, 2 * r); };
+    switch (id) {
+    case I_Export:   // a tray with an arrow out of it
+        P({4, 14, 4, 20, 20, 20, 20, 14}, false);
+        L(12, 4, 12, 15);
+        P({7.5f, 8.5f, 12, 4, 16.5f, 8.5f}, false);
+        break;
+    case I_Motion:   // a ball with speed lines
+        C(15.5f, 12, 5);
+        L(5, 8, 8.5f, 8);
+        L(2.5f, 12, 8.5f, 12);
+        L(5, 16, 8.5f, 16);
+        break;
+    case I_Frame:    // viewfinder corners and a dot
+        P({3, 8, 3, 3, 8, 3}, false);
+        P({16, 3, 21, 3, 21, 8}, false);
+        P({21, 16, 21, 21, 16, 21}, false);
+        P({8, 21, 3, 21, 3, 16}, false);
+        C(12, 12, 2.5f);
+        break;
+    case I_Layers:
+        P({12, 3, 21, 8, 12, 13, 3, 8}, true);
+        P({3, 12, 12, 17, 21, 12}, false);
+        P({3, 16, 12, 21, 21, 16}, false);
+        break;
+    case I_Video:    // a film camera
+        R(2.5f, 7, 15.5f, 17, 2);
+        P({15.5f, 10.5f, 21.5f, 7.5f, 21.5f, 16.5f, 15.5f, 13.5f}, false);
+        break;
+    case I_Folder:
+        P({3, 6, 9, 6, 11, 8, 21, 8, 21, 19, 3, 19}, true);
+        break;
+    case I_Film:     // a strip of film
+        R(3, 4, 21, 20, 2);
+        L(7.5f, 4, 7.5f, 20);
+        L(16.5f, 4, 16.5f, 20);
+        L(3, 9.5f, 7.5f, 9.5f);
+        L(3, 14.5f, 7.5f, 14.5f);
+        L(16.5f, 9.5f, 21, 9.5f);
+        L(16.5f, 14.5f, 21, 14.5f);
+        break;
+    case I_Camera:   // a stills camera
+        R(3, 7, 21, 19, 2);
+        P({8, 7, 9.5f, 4.5f, 14.5f, 4.5f, 16, 7}, false);
+        C(12, 13, 3.5f);
+        break;
+    case I_Monitor:
+        R(3, 4, 21, 16, 2);
+        L(12, 16, 12, 20);
+        L(8, 20, 16, 20);
+        break;
+    case I_Doc:
+        P({6, 3, 14, 3, 19, 8, 19, 21, 6, 21}, true);
+        P({14, 3, 14, 8, 19, 8}, false);
+        L(9, 13, 16, 13);
+        L(9, 17, 16, 17);
+        break;
+    case I_Pulse:
+        P({2.5f, 12, 6.5f, 12, 9.5f, 5, 13.5f, 19, 16.5f, 12, 21.5f, 12}, false);
+        break;
+    case I_Sliders:
+        L(4, 7, 7, 7);
+        L(11, 7, 20, 7);
+        C(9, 7, 2);
+        L(4, 17, 13, 17);
+        L(17, 17, 20, 17);
+        C(15, 17, 2);
+        break;
+    case I_Refresh:
+        g.DrawArc(&pen, 5.0f, 5.0f, 14.0f, 14.0f, 30.0f, 300.0f);
+        P({18.6f, 4.2f, 18.1f, 8.5f, 13.9f, 7.6f}, false);
+        break;
+    case I_Check:
+        P({5, 12.5f, 10, 17.5f, 19, 7}, false);
+        break;
+    case I_Arrow:    // out to the web
+        L(7, 17, 17, 7);
+        P({9, 7, 17, 7, 17, 15}, false);
+        break;
+    }
+}
+
 // ------------------------------------------------------------------------------------------------------------- layout
 // All positions are in 96-dpi units and scaled, so the window looks the same at 125 % / 150 % Windows scaling.
 int S(int v) { return (int)std::lround(v * g_scale); }
 
-constexpr int kPad = 14;                 // window margin
-constexpr int kColW = 470;               // column width
-constexpr int kGap = 14;                 // between columns
-constexpr int kLeftX = kPad, kRightX = kPad + kColW + kGap;
-constexpr int kLabelW = 118;             // label column inside a group
-constexpr int kRow = 32;
-constexpr int kWinW = kPad * 2 + kColW * 2 + kGap;
+constexpr int kSideW = 232;              // sidebar
+constexpr int kPad = 28;                 // page margin
+constexpr int kGap = 16;                 // between the two columns
+constexpr int kColW = 448;               // a card
+constexpr int kIn = 22;                  // inside a card
+constexpr int kLeftX = kSideW + kPad, kRightX = kLeftX + kColW + kGap;
+constexpr int kWinW = kRightX + kColW + kPad;
+constexpr int kLabelW = 112;             // label column inside a card
+constexpr int kRow = 42;                 // one row: a 32 px control + 10 px air
+constexpr int kTop = 130;                // first card, below the page title
+constexpr int kFootH = 76;               // bottom bar
+constexpr int kIndent = 56;              // text under a switch lines up with the switch's label
 
-// Tabs: every control made while g_page >= 0 belongs to that tab.
-constexpr int kPages = 4;
-const wchar_t* kPageNames[kPages] = {L"  Output  ", L"  Motion + Camera  ", L"  Passes  ", L"  Workflow  "};
-int g_page = -1, g_curPage = 0;
+// Pages, picked in the sidebar: every control made while g_page >= 0 belongs to that page.
+constexpr int kPages = 5;
+struct PageInfo {
+    const wchar_t* nav;
+    const wchar_t* title;
+    const wchar_t* sub;
+};
+const PageInfo kPage[kPages] = {
+    {L"Output", L"Output", L"Where every export goes, how it is named and the video format it is written in."},
+    {L"Motion", L"Motion", L"Frame rate, motion blur and how the camera moves."},
+    {L"Capture", L"Capture", L"Where EVE1G takes the frame, and what you see while it exports."},
+    {L"Passes", L"Passes", L"Extra files written with every video, frame for frame."},
+    {L"Camera data", L"Camera data", L"Camera files for After Effects and Blender, and the log."},
+};
+int g_page = -1, g_curPage = 0, g_height = 0;
 std::vector<HWND> g_pages[kPages];
-HWND hTabs;
+
+enum class K { Text, Edit, Combo, Toggle, Button, Nav };
+enum class B { Primary, Secondary, Ghost };
+struct Ctl {
+    K kind = K::Text;
+    int page = -1;
+    COLORREF fg = col::text;
+    COLORREF bgc = col::bg;   // what is behind the control
+    RECT frame{};             // edits: the box drawn around them
+    B btn = B::Secondary;
+    int nav = -1;
+    int icon = -1;
+    bool hover = false;
+};
+std::unordered_map<HWND, Ctl> g_ctl;
+
+struct Card {
+    int page;
+    int x, y, w, h;
+    std::wstring title;
+    int icon;
+};
+std::vector<Card> g_cards;
+bool g_onCard = false;   // controls made now sit on a card
+
+LRESULT CALLBACK ComboProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+LRESULT CALLBACK HoverProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+LRESULT CALLBACK EditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 
 HWND Make(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id = 0, DWORD ex = 0,
           HFONT font = nullptr) {
     HWND c = CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | style, S(x), S(y), S(w), S(h), g_wnd,
                              (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(c, WM_SETFONT, (WPARAM)(font ? font : g_font), TRUE);
-    if (g_page >= 0) g_pages[g_page].push_back(c);   // shown only on its tab
+    if (g_page >= 0) g_pages[g_page].push_back(c);   // shown only on its page
+    return c;
+}
+Ctl& Reg(HWND h, K kind) {
+    Ctl& c = g_ctl[h];
+    c.kind = kind;
+    c.page = g_page;
+    c.bgc = g_onCard ? col::card : col::bg;
     return c;
 }
 
-// A titled box. Controls are placed inside it by the caller; returns the y of its first row.
+HWND Text(int x, int y, int w, int h, const wchar_t* text, COLORREF fg, HFONT font, DWORD style = SS_LEFT) {
+    HWND s = Make(L"STATIC", text, style | SS_NOPREFIX, x, y, w, h, 0, 0, font);
+    Reg(s, K::Text).fg = fg;
+    return s;
+}
+// Labels and hints are never disabled (Windows would emboss them); they only change colour.
+void Dim(HWND h, bool on) {
+    Ctl& c = g_ctl[h];
+    const COLORREF want = on ? col::text2 : col::dim;
+    if (c.fg != want) {
+        c.fg = want;
+        InvalidateRect(h, nullptr, TRUE);
+    }
+}
+
+// A card with a title. Controls are placed inside it by the caller.
 struct Group {
     int x, y, w;
     int row;   // current row y
-    HWND box;
+    size_t card;
 };
-Group BeginGroup(const wchar_t* title, int x, int y, int w) {
-    Group g{x, y, w, y + 26, nullptr};
-    g.box = Make(WC_BUTTONW, title, BS_GROUPBOX, x, y, w, 40, 0, 0, g_bold);
-    g_groups.push_back(g.box);
-    return g;
+Group BeginGroup(const wchar_t* title, int x, int y, int w, int icon = -1) {
+    g_cards.push_back({g_page, x, y, w, 60, title, icon});
+    g_onCard = true;
+    return Group{x, y, w, y + 58, g_cards.size() - 1};
 }
-int EndGroup(Group& g) {   // sizes the box to its content, returns the y below it
-    const int h = g.row - g.y + 8;
-    SetWindowPos(g.box, nullptr, 0, 0, S(g.w), S(h), SWP_NOMOVE | SWP_NOZORDER);
+int EndGroup(Group& g) {   // sizes the card to its content, returns the y below it
+    const int h = g.row - g.y + 14;
+    g_cards[g.card].h = h;
+    g_onCard = false;
     return g.y + h;
 }
-HWND Label(Group& g, const wchar_t* text) {
-    return Make(L"STATIC", text, SS_LEFT, g.x + 12, g.row + 4, kLabelW - 8, 20);
-}
-int CtrlX(const Group& g) { return g.x + 12 + kLabelW; }
-int CtrlW(const Group& g) { return g.w - 24 - kLabelW; }
-HWND Hint(int x, int y, int w, int h, const wchar_t* text = L"") {
-    HWND c = Make(L"STATIC", text, SS_LEFT, x, y, w, h);
-    g_hints.push_back(c);
+HWND Label(Group& g, const wchar_t* text) { return Text(g.x + kIn, g.row + 7, kLabelW - 10, 20, text, col::text2, g_font); }
+int CtrlX(const Group& g) { return g.x + kIn + kLabelW; }
+int CtrlW(const Group& g) { return g.w - 2 * kIn - kLabelW; }
+HWND Hint(int x, int y, int w, int h, const wchar_t* text = L"") { return Text(x, y, w, h, text, col::hint, g_small); }
+
+HWND Combo(int id, int x, int y, int w) {
+    HWND c = Make(WC_COMBOBOXW, L"",
+                  CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, x, y, w, 420, id);
+    Reg(c, K::Combo);
+    // The closed box is exactly as tall as a text field (Windows adds its own border to the item height).
+    RECT wr{};
+    GetWindowRect(c, &wr);
+    const int ih = (int)SendMessageW(c, CB_GETITEMHEIGHT, (WPARAM)-1, 0);
+    SendMessageW(c, CB_SETITEMHEIGHT, (WPARAM)-1, ih + S(32) - (wr.bottom - wr.top));
+    SetWindowSubclass(c, ComboProc, 1, 0);
+    SendMessageW(c, CB_SETDROPPEDWIDTH, S(std::max(w, 430)), 0);
+    COMBOBOXINFO ci{sizeof(ci)};
+    if (GetComboBoxInfo(c, &ci) && ci.hwndList) SetWindowTheme(ci.hwndList, L"DarkMode_Explorer", nullptr);
     return c;
 }
-HWND Combo(int id, int x, int y, int w) {
-    return Make(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, x, y, w, 400, id);
-}
 HWND Edit(int x, int y, int w, DWORD style = 0, int id = 0) {
-    return Make(WC_EDITW, L"", ES_AUTOHSCROLL | WS_TABSTOP | style, x, y, w, 24, id, WS_EX_CLIENTEDGE);
+    HWND e = Make(WC_EDITW, L"", ES_AUTOHSCROLL | WS_TABSTOP | style, x + 12, y + 7, w - 24, 19, id);
+    Ctl& c = Reg(e, K::Edit);
+    c.frame = {S(x), S(y), S(x + w), S(y + 32)};
+    SetWindowSubclass(e, EditProc, 2, 0);
+    return e;
 }
-HWND CheckBox(const wchar_t* text, int x, int y, int w, int id = 0) {
-    return Make(WC_BUTTONW, text, BS_AUTOCHECKBOX | WS_TABSTOP, x, y, w, 22, id);
+// An on / off switch with its label.
+HWND CheckBox(const wchar_t* text, int x, int y, int w, int id = 0, int h = 24) {
+    HWND b = Make(WC_BUTTONW, text, BS_OWNERDRAW | WS_TABSTOP, x, y, w, h, id);
+    Reg(b, K::Toggle);
+    g_toggle[b] = false;
+    SetWindowSubclass(b, HoverProc, 3, 0);
+    return b;
+}
+HWND Button(const wchar_t* text, int x, int y, int w, int h, int id, B kind, int icon = -1) {
+    HWND b = Make(WC_BUTTONW, text, BS_OWNERDRAW | WS_TABSTOP, x, y, w, h, id, 0, kind == B::Primary ? g_semi : g_font);
+    Ctl& c = Reg(b, K::Button);
+    c.btn = kind;
+    c.icon = icon;
+    SetWindowSubclass(b, HoverProc, 3, 0);
+    return b;
 }
 void Add(HWND combo, const wchar_t* s) { SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)s); }
 
@@ -392,10 +709,10 @@ void UpdateHints() {
         const Codec& k = kCodecs[c];
         const bool q = k.quality != Q::None;
         EnableWindow(hQuality, q);
-        EnableWindow(hQualityLabel, q);
+        Dim(hQualityLabel, q);
         SetWindowTextW(hQualityLabel, k.quality == Q::Cq ? L"Quality (CQ)" : L"Quality (CRF)");
         EnableWindow(hBitrate, k.bitrate);
-        EnableWindow(hBitrateLabel, k.bitrate);
+        Dim(hBitrateLabel, k.bitrate);
         SetWindowTextW(hNote, k.note);
     }
     ShowWindow(hFpsCustom, (g_curPage == 1 && Sel(hFps) == kFpsCount) ? SW_SHOW : SW_HIDE);
@@ -407,7 +724,7 @@ void UpdateHints() {
     const double strength = sh >= 0 ? kShutter[sh].strength : 0.5;
     const int used = samples == 0 ? 1 : (int)std::ceil(strength * samples + 1e-6);
     wchar_t buf[512];
-    swprintf_s(buf, L"Each video frame = %d game frame(s), %d blended. The game runs at %.0f fps.\r\n%s", samples + 1,
+    swprintf_s(buf, L"Each video frame = %d game frames, %d blended. The game runs at %.0f fps.\r\n%s", samples + 1,
                used, game,
                game > 60.0 ? L"Above 60 game fps audio is OFF - record sound separately."
                            : L"Audio is exported with the video.");
@@ -443,7 +760,7 @@ void UpdateHints() {
     const bool depthOn = Checked(hDepthOn);
     const bool normalsOn = Checked(hNormalsOn);
     const int df = std::max(0, Sel(hDepthFormat));
-    const bool exr = df == 2;
+    const bool exr = df == 1;
     EnableWindow(hDepthFormat, depthOn || normalsOn);
     for (HWND c : {hDepthAuto, hDepthCurve, hDepthWhite}) EnableWindow(c, depthOn && !exr);
     for (HWND c : {hDepthNear, hDepthFar}) EnableWindow(c, depthOn && !exr && !Checked(hDepthAuto));
@@ -457,8 +774,8 @@ void UpdateHints() {
             note += L" " + W(name) + L"_depth_exr\\*.exr" + (depthOn && normalsOn ? L" (Z + N.X/N.Y/N.Z)"
                                                               : normalsOn ? L" (N.X/N.Y/N.Z)" : L" (Z in metres)");
         } else {
-            if (depthOn) note += L" " + W(name) + (df == 1 ? L"_depth.mov" : L"_depth\\*.png");
-            if (normalsOn) note += L"  " + W(name) + (df == 1 ? L"_normals.mov" : L"_normals\\*.png");
+            if (depthOn) note += L" " + W(name) + L"_depth\\*.png";
+            if (normalsOn) note += L"  " + W(name) + L"_normals\\*.png";
         }
         note += L"\r\nNeeds EVE1G_Depth.fx in reshade-shaders\\Shaders.";
     }
@@ -469,43 +786,25 @@ void UpdateHints() {
         std::wstring pn;
         if (Checked(hPlateOn)) {
             pn += cleanReshade ? L"Plate: " + W(name) + L"_plate.mov   "
-                               : L"Plate needs capture Clean with ReShade applied (Motion + Camera tab).   ";
+                               : L"The plate needs Clean capture with ReShade applied (Capture page).   ";
         }
         if (Checked(hProxyOn)) pn += L"Proxy: " + W(name) + L"_proxy.mp4 (half size)   ";
-        if (Checked(hIdOn)) pn += L"ID: " + W(name) + L"_id\\*.png + _id_legend.txt (no MSAA)";
-        if (pn.empty()) pn = L"Each one is written next to the video, frame for frame. The proxy relinks to the master "
-                             L"in Premiere / Resolve by name.";
+        if (pn.empty()) pn = L"Written next to the video, frame for frame. The proxy relinks to the master in "
+                             L"Premiere / Resolve by name.";
         SetWindowTextW(hPassNote, pn.c_str());
     }
     {
         static const wchar_t* capNotes[] = {
-            L"The frame is taken before the game draws its UI and your ReShade preset is rendered on it. Needed for "
-            L"the clean plate and the on-screen progress.",
+            L"Taken before the game draws its UI, with your ReShade preset on it. Needed for the clean plate and the "
+            L"on-screen progress.",
             L"Reads the finished screen - progress bar and cursor end up in the video.",
             L"Rockstar's own export image: no ReShade, no DLSS 5 effects drawn at present.",
-            L"Reads where ReShade renders its effects. Experimental.",
-            L"Original EVE capture, kept for comparison. Black with the GTA V Upscaler.",
         };
-        const int ci = std::clamp(Sel(hCapture), 0, 4);
+        const int ci = std::clamp(Sel(hCapture), 0, 2);
         SetWindowTextW(hCaptureNote, capNotes[ci]);
     }
 
-    const bool hfrOn = Checked(hHfrOn);
-    EnableWindow(hHfrFormat, hfrOn);
-    EnableWindow(hHfrEvery, hfrOn);
-    std::wstring hn;
-    if (!hfrOn) {
-        hn = L"Off. When on, every game frame is also saved unblended - real high-frame-rate footage for slow "
-             L"motion, speed ramps or your own blur in post.";
-    } else {
-        const int every = kHfrEvery[std::max(0, Sel(hHfrEvery))].n;
-        const double hfps = fps * (samples + 1) / every;
-        wchar_t b[256];
-        swprintf_s(b, L"%.0f fps, no audio:  %s%s   (big files - fast drive recommended)", hfps, W(name).c_str(),
-                   Sel(hHfrFormat) == 1 ? L"_hfr...\\*.png" : (L"_hfr" + std::to_wstring((int)std::lround(hfps)) + L".mov").c_str());
-        hn = b;
-    }
-    SetWindowTextW(hHfrNote, hn.c_str());
+    InvalidateRect(g_wnd, nullptr, FALSE);   // the boxes of fields that were switched on / off
 }
 
 // Summary of the last export, read from EVE1G.log.
@@ -546,7 +845,9 @@ void UpdateStatus() {
         if (done.empty()) s += L"   •   in progress or interrupted";
         if (!err.empty()) s += L"\r\nLast error: " + W(Trim(err));
     }
+    g_ctl[hStatus].fg = err.empty() ? col::text2 : col::bad;
     SetWindowTextW(hStatus, s.c_str());
+    InvalidateRect(hStatus, nullptr, TRUE);
 }
 
 // ----------------------------------------------------------------------------------------------- format test
@@ -693,9 +994,9 @@ void PopulateCodecs() {
         if (i < kCustom) ++shown;
     }
     if (keep >= 0) SelectCodec(keep);
-    std::wstring line = tested ? L"Showing the " + std::to_wstring(shown) + L" of " + std::to_wstring(kCustom) +
-                                     L" formats that work on this PC (tested " +
-                                     W(formats.GetString("formats", "tested", "")) + L")."
+    std::wstring line = tested ? std::to_wstring(shown) + L" of " + std::to_wstring(kCustom) +
+                                     L" formats work on this PC  ·  tested " +
+                                     W(formats.GetString("formats", "tested", ""))
                                : L"Formats not tested yet on this PC.";
     SetWindowTextW(hFormats, line.c_str());
 }
@@ -726,7 +1027,6 @@ void Load() {
     for (int i = 0; i < (int)(sizeof(kShutter) / sizeof(kShutter[0])); ++i)
         if (std::fabs(kShutter[i].strength - strength) < best) best = std::fabs(kShutter[i].strength - strength), si = i;
     SendMessageW(hShutter, CB_SETCURSEL, si, 0);
-    Check(hRealCam, ini.GetBoolean("EXPORT", "blend_linear", false));
     {
         const double ms = ini.GetReal("EXPORT", "rolling_shutter_ms", 0.0);
         int ri = 0;
@@ -734,12 +1034,6 @@ void Load() {
         for (int i = 0; i < (int)(sizeof(kRolling) / sizeof(kRolling[0])); ++i)
             if (std::fabs(kRolling[i].ms - ms) < rb) rb = std::fabs(kRolling[i].ms - ms), ri = i;
         SendMessageW(hRolling, CB_SETCURSEL, ri, 0);
-        const double ls = ini.GetReal("EXPORT", "light_streaks", 0.0);
-        int li = 0;
-        double lb = 1e9;
-        for (int i = 0; i < (int)(sizeof(kStreaks) / sizeof(kStreaks[0])); ++i)
-            if (std::fabs(kStreaks[i].s - ls) < lb) lb = std::fabs(kStreaks[i].s - ls), li = i;
-        SendMessageW(hStreaks, CB_SETCURSEL, li, 0);
     }
 
     const std::string cap = Trim(ini.GetString("EXPORT", "capture_source", "clean"));
@@ -759,7 +1053,6 @@ void Load() {
         const double os = ini.GetReal("EXPORT", "osd_scale", 1.0);
         SendMessageW(hOsdSize, CB_SETCURSEL, os >= 1.75 ? 2 : os >= 1.25 ? 1 : 0, 0);
     }
-    Check(hExr, ini.GetBoolean("EXPORT", "export_openexr", false));
 
     Check(hDepthOn, ini.GetBoolean("DEPTH", "enabled", false));
     {
@@ -781,7 +1074,6 @@ void Load() {
         SetWindowTextW(hNormalsFov, W(b).c_str());
         Check(hPlateOn, ini.GetBoolean("PASSES", "clean_plate", false));
         Check(hProxyOn, ini.GetBoolean("PASSES", "proxy", false));
-        Check(hIdOn, ini.GetBoolean("PASSES", "id_pass", false));
         Check(hNotify, ini.GetBoolean("EXPORT", "notify_done", false));
         Check(hStabilizer, ini.GetBoolean("EXPORT", "camera_stabilizer", true));
         {
@@ -789,10 +1081,6 @@ void Load() {
             SendMessageW(hMaster, CB_SETCURSEL, (m == "true" || m == "1" || m == "on") ? 2
                                                 : (m == "auto") ? 1 : 0, 0);
         }
-        Check(hHfrOn, ini.GetBoolean("HFR", "enabled", false));
-        SendMessageW(hHfrFormat, CB_SETCURSEL, Trim(ini.GetString("HFR", "format", "prores")) == "png" ? 1 : 0, 0);
-        const long ev = ini.GetInteger("HFR", "every", 1);
-        SendMessageW(hHfrEvery, CB_SETCURSEL, ev >= 4 ? 2 : ev >= 2 ? 1 : 0, 0);
     }
 
     const std::string log = Trim(ini.GetString("", "log_level", "info"));
@@ -873,28 +1161,19 @@ bool Save() {
     ini += "; Share of each frame's interval that is blended = shutter angle / 360 (0.5 = 180 degrees)\r\n";
     ini += "motion_blur_strength = " + std::string(strength) + "\r\n";
     {
-        const bool real = Checked(hRealCam);
         const int ri = std::max(0, Sel(hRolling));
         char ms[16];
         snprintf(ms, sizeof(ms), "%.0f", kRolling[ri].ms);
-        ini += "; Real camera: blend in linear light like a sensor (bright lights streak) and fade the shutter in / out\r\n";
-        ini += ";   like a rotary shutter. false = the old display-image blend with a hard shutter.\r\n";
-        ini += "blend_linear = " + b(real) + "\r\n";
-        ini += "shutter_soft = " + std::string(real ? "0.15" : "0") + "\r\n";
+        ini += "; Light-correct blending, soft shutter edges and light streaks are off in this version\r\n";
+        ini += "blend_linear = false\r\nshutter_soft = 0\r\nlight_streaks = 0\r\n";
         ini += "; Rolling shutter: ms the sensor takes to read the image top to bottom (0 = global shutter, like a\r\n";
         ini += ";   cinema camera; 8-25 = mirrorless / phone - fast pans lean). Needs motion blur samples.\r\n";
         ini += "rolling_shutter_ms = " + std::string(ms) + "\r\n";
-        char ls[16];
-        snprintf(ls, sizeof(ls), "%.2f", kStreaks[std::max(0, Sel(hStreaks))].s);
-        ini += "; Light streaks (needs blend_linear): bright lights and bokeh keep their strength when the blur smears\r\n";
-        ini += ";   them, like on film. 0 = off, 0.5 strong, 0.75 stronger. Still parts of the image are not changed.\r\n";
-        ini += "light_streaks = " + std::string(ls) + "\r\n";
     }
-    ini += "export_openexr = " + b(Checked(hExr)) + "\r\n\r\n";
+    ini += "export_openexr = false\r\n\r\n";
     ini += "; clean   = frame taken before the game UI, your ReShade preset applied (no progress bar, no cursor)\r\n";
     ini += "; present = what is on screen (includes the progress bar and cursor)\r\n";
     ini += "; encode  = Rockstar's export image, no ReShade\r\n";
-    ini += "; effects = experimental;  legacy = original EVE (black with the GTA V Upscaler)\r\n";
     ini += "capture_source = " + std::string(kCapture[Sel(hCapture)].value) + "\r\n";
     ini += "; clean: apply your ReShade preset (DOF, grade) to the video\r\n";
     ini += "clean_reshade = " + b(Checked(hReshade)) + "\r\n";
@@ -928,9 +1207,9 @@ bool Save() {
         ini += "; Depth pass: a depth map exported with every video, frame for frame (needs EVE1G_Depth.fx in "
                "reshade-shaders\\Shaders)\r\n";
         ini += "enabled = " + b(Checked(hDepthOn)) + "\r\n";
-        ini += "; png16 = 16-bit PNG sequence,  prores = ProRes 4444 .mov,  exr = float OpenEXR sequence (metres)\r\n";
+        ini += "; png16 = 16-bit PNG sequence,  exr = float OpenEXR sequence (metres)\r\n";
         ini += "format = " + std::string(kDepthFormat[std::max(0, Sel(hDepthFormat))].value) + "\r\n";
-        ini += "; png16 / prores: distance range in metres, curve (log / linear) and which end is white (near / far)\r\n";
+        ini += "; png16: distance range in metres, curve (log / linear) and which end is white (near / far)\r\n";
         ini += "; range = auto: near / far worked out from the first frame of each clip (full black to white).\r\n"
                ";         fixed: the near / far below\r\n";
         ini += std::string("range = ") + (Checked(hDepthAuto) ? "auto" : "fixed") + "\r\n";
@@ -938,12 +1217,8 @@ bool Save() {
         ini += "curve = " + std::string(kDepthCurve[std::max(0, Sel(hDepthCurve))].value) + "\r\n";
         ini += "white = " + std::string(kDepthWhite[std::max(0, Sel(hDepthWhite))].value) + "\r\n\r\n";
         ini += "[HFR]\r\n";
-        ini += "; HFR export: every game frame also saved unblended (fps x (samples + 1)), no audio\r\n";
-        ini += "enabled = " + b(Checked(hHfrOn)) + "\r\n";
-        ini += "; prores = ProRes 422 HQ .mov,  png = PNG sequence\r\n";
-        ini += "format = " + std::string(kHfrFormat[std::max(0, Sel(hHfrFormat))].value) + "\r\n";
-        ini += "; keep every Nth game frame (1 = all)\r\n";
-        ini += "every = " + std::to_string(kHfrEvery[std::max(0, Sel(hHfrEvery))].n) + "\r\n\r\n";
+        ini += "; High-frame-rate export is off in this version\r\n";
+        ini += "enabled = false\r\nformat = prores\r\nevery = 1\r\n\r\n";
         int fov = _wtoi(GetText(hNormalsFov).c_str());
         if (fov < 5 || fov > 150) fov = 50;
         ini += "[PASSES]\r\n";
@@ -956,8 +1231,7 @@ bool Save() {
         ini += "normals = " + b(Checked(hNormalsOn)) + "\r\n";
         ini += "; field of view for the normals when Focus Puller is not running (degrees, vertical)\r\n";
         ini += "normals_fov = " + std::to_string(fov) + "\r\n";
-        ini += "; id_pass = EXPERIMENTAL colour matte from the game's stencil buffer, PNG sequence + legend\r\n";
-        ini += "id_pass = " + b(Checked(hIdOn)) + "\r\n";
+        ini += "id_pass = false\r\n";
     }
     {
         std::ofstream f(IniPath(), std::ios::binary | std::ios::trunc);
@@ -999,247 +1273,263 @@ bool Save() {
 }
 
 // --------------------------------------------------------------------------------------------------------- window
-int g_height = 0;
+std::wstring VersionText() {
+    std::wstring v = L"v" + W(EVE1G_VERSION);
+    std::replace(v.begin(), v.end(), L'-', L' ');
+    return v;   // "v0.11.2 beta"
+}
 
 void Build() {
-    // title
+    // ---------------- sidebar (all pages)
     g_page = -1;
-    Make(L"STATIC", L"EVE1G", SS_LEFT, kPad, 10, 88, 30, 0, 0, g_title);
-    Hint(kPad + 92, 20, 640, 20, L"v0.11.0-beta by TEX1G  •  Rockstar Editor export with ReShade + motion blur, without the UI");
-    hTabs = Make(WC_TABCONTROLW, L"", WS_TABSTOP | TCS_FOCUSNEVER, kPad, 48, kWinW - kPad * 2, 28, ID_TABS);
+    static const int kNavIcon[kPages] = {I_Export, I_Motion, I_Frame, I_Layers, I_Video};
     for (int i = 0; i < kPages; ++i) {
-        TCITEMW it{};
-        it.mask = TCIF_TEXT;
-        it.pszText = const_cast<wchar_t*>(kPageNames[i]);
-        SendMessageW(hTabs, TCM_INSERTITEMW, i, (LPARAM)&it);
+        HWND b = Make(WC_BUTTONW, kPage[i].nav, BS_OWNERDRAW | WS_TABSTOP, 16, 146 + i * 50, kSideW - 32, 44,
+                      ID_NAV + i, 0, g_semi);
+        Ctl& c = Reg(b, K::Nav);
+        c.nav = i;
+        c.icon = kNavIcon[i];
+        c.bgc = col::side;
+        SetWindowSubclass(b, HoverProc, 3, 0);
     }
-    const int top = 86;
-    int pageBottom[kPages] = {};
+
+    // One grid on every card: labels on the left, controls from CtrlX to the right edge. Number fields are 64 wide;
+    // a switch with a one-line note under it takes 58, a plain row kRow.
 
     // ================= 1. Output: where and in what format
     g_page = 0;
-    Group out = BeginGroup(L"Output and naming", kLeftX, top, kColW);
+    Group out = BeginGroup(L"Files", kLeftX, kTop, kColW, I_Folder);
     Label(out, L"Folder");
-    hOut = Edit(CtrlX(out), out.row, CtrlW(out) - 90, 0, ID_NAMING);
-    Make(WC_BUTTONW, L"Browse...", BS_PUSHBUTTON | WS_TABSTOP, CtrlX(out) + CtrlW(out) - 84, out.row - 1, 84, 26,
-         ID_BROWSE);
+    hOut = Edit(CtrlX(out), out.row, CtrlW(out) - 112, 0, ID_NAMING);
+    Button(L"Browse", CtrlX(out) + CtrlW(out) - 100, out.row, 100, 32, ID_BROWSE, B::Secondary, I_Folder);
     out.row += kRow;
     Label(out, L"Project");
-    hProject = Edit(CtrlX(out), out.row, 150, 0, ID_NAMING);
-    Make(L"STATIC", L"Shot", SS_RIGHT, CtrlX(out) + 156, out.row + 4, 40, 20);
-    hShot = Edit(CtrlX(out) + 202, out.row, CtrlW(out) - 202, 0, ID_NAMING);
+    const int half = (CtrlW(out) - 56) / 2;   // Project and Shot: two equal fields
+    hProject = Edit(CtrlX(out), out.row, half, 0, ID_NAMING);
+    Text(CtrlX(out) + half, out.row + 7, 56, 20, L"Shot", col::text2, g_font, SS_CENTER);
+    hShot = Edit(CtrlX(out) + CtrlW(out) - half, out.row, half, 0, ID_NAMING);
     out.row += kRow;
     Label(out, L"Take");
-    hTake = Edit(CtrlX(out), out.row, 50, ES_NUMBER, ID_NAMING);
-    Hint(CtrlX(out) + 58, out.row + 4, 110, 20, L"0 = next free");
-    hSidecar = CheckBox(L"Settings .txt beside each video", CtrlX(out) + 160, out.row + 1, CtrlW(out) - 160, ID_NAMING);
+    hTake = Edit(CtrlX(out), out.row, 64, ES_NUMBER, ID_NAMING);
+    Hint(CtrlX(out) + 76, out.row + 8, CtrlW(out) - 76, 18, L"0 = the next free take");
     out.row += kRow;
-    hPreview = Hint(out.x + 12, out.row, out.w - 24, 52);
-    out.row += 54;
-    int leftY = EndGroup(out);
+    hSidecar = CheckBox(L"Save a settings .txt beside each video", out.x + kIn, out.row + 4, out.w - 2 * kIn, ID_NAMING);
+    out.row += kRow;
+    hPreview = Hint(out.x + kIn, out.row, out.w - 2 * kIn, 36);
+    out.row += 38;
+    EndGroup(out);
 
-    Group enc = BeginGroup(L"Video format (Voukoder)", kRightX, top, kColW);
+    Group enc = BeginGroup(L"Video format", kRightX, kTop, kColW, I_Film);
     Label(enc, L"Preset");
     hCodec = Combo(ID_CODEC, CtrlX(enc), enc.row, CtrlW(enc));
     enc.row += kRow;
     hQualityLabel = Label(enc, L"Quality (CRF)");
-    hQuality = Edit(CtrlX(enc), enc.row, 50, ES_NUMBER);
-    hBitrateLabel = Make(L"STATIC", L"Bitrate Mbit/s (0 = quality only)", SS_LEFT, CtrlX(enc) + 62, enc.row + 4, 200, 20);
-    hBitrate = Edit(CtrlX(enc) + CtrlW(enc) - 60, enc.row, 60, ES_NUMBER);
+    hQuality = Edit(CtrlX(enc), enc.row, 64, ES_NUMBER);
+    hBitrateLabel = Text(CtrlX(enc) + 70, enc.row + 7, CtrlW(enc) - 70 - 76, 20, L"Bitrate Mbit/s", col::text2,
+                         g_font, SS_RIGHT);
+    hBitrate = Edit(CtrlX(enc) + CtrlW(enc) - 64, enc.row, 64, ES_NUMBER);
     enc.row += kRow;
     Label(enc, L"Precision");
     hMaster = Combo(ID_CAPTURE, CtrlX(enc), enc.row, CtrlW(enc));
     for (const Choice& c : kMaster) Add(hMaster, c.label);
     enc.row += kRow;
-    hNote = Hint(enc.x + 12, enc.row, enc.w - 24, 52);
-    enc.row += 54;
-    hFormats = Hint(enc.x + 12, enc.row, enc.w - 24, 20);
-    enc.row += 24;
-    Make(WC_BUTTONW, L"Advanced Voukoder settings...", BS_PUSHBUTTON | WS_TABSTOP, enc.x + 12, enc.row, 210, 28,
-         ID_VOUKODER);
-    Make(WC_BUTTONW, L"Test formats again", BS_PUSHBUTTON | WS_TABSTOP, enc.x + enc.w - 12 - 150, enc.row, 150, 28,
-         ID_TESTFORMATS);
-    enc.row += 34;
-    int rightY = EndGroup(enc);
-    pageBottom[0] = std::max(leftY, rightY);
+    hNote = Hint(enc.x + kIn, enc.row, enc.w - 2 * kIn, 36);
+    enc.row += 38;
+    hFormats = Hint(enc.x + kIn, enc.row, enc.w - 2 * kIn, 18);
+    enc.row += 30;
+    const int bw = (enc.w - 2 * kIn - 12) / 2;   // two equal buttons
+    Button(L"Voukoder settings", enc.x + kIn, enc.row, bw, 36, ID_VOUKODER, B::Secondary, I_Sliders);
+    Button(L"Test formats again", enc.x + enc.w - kIn - bw, enc.row, bw, 36, ID_TESTFORMATS, B::Secondary, I_Refresh);
+    enc.row += 46;
+    EndGroup(enc);
 
-    // ================= 2. Motion & camera: how the frames look
+    // ================= 2. Motion: frame rate, blur, camera
     g_page = 1;
-    Group tm = BeginGroup(L"Frame rate and motion blur", kLeftX, top, kColW);
+    Group tm = BeginGroup(L"Frame rate and motion blur", kLeftX, kTop, kColW, I_Motion);
     Label(tm, L"Frame rate");
-    hFps = Combo(ID_FPS, CtrlX(tm), tm.row, 110);
+    const int thalf = (CtrlW(tm) - 12) / 2;
+    hFps = Combo(ID_FPS, CtrlX(tm), tm.row, thalf);
     for (const Fps& f : kFps) Add(hFps, f.label);
     Add(hFps, L"Custom...");
-    hFpsCustom = Edit(CtrlX(tm) + 118, tm.row, 100, 0, ID_FPS);
+    hFpsCustom = Edit(CtrlX(tm) + thalf + 12, tm.row, CtrlW(tm) - thalf - 12, 0, ID_FPS);
     tm.row += kRow;
     Label(tm, L"Blur samples");
-    hSamples = Edit(CtrlX(tm), tm.row, 50, ES_NUMBER, ID_SAMPLES);
-    Hint(CtrlX(tm) + 58, tm.row + 4, CtrlW(tm) - 58, 20, L"0 = off,  12 cinematic,  39 = 960 fps at 24 (cleanest)");
+    hSamples = Edit(CtrlX(tm), tm.row, 64, ES_NUMBER, ID_SAMPLES);
+    Hint(CtrlX(tm) + 76, tm.row + 8, CtrlW(tm) - 76, 18, L"0 off  ·  12 cinematic  ·  39 max");
     tm.row += kRow;
     Label(tm, L"Shutter angle");
-    hShutter = Combo(ID_SHUTTER, CtrlX(tm), tm.row, 200);
+    hShutter = Combo(ID_SHUTTER, CtrlX(tm), tm.row, CtrlW(tm));
     for (const Shutter& s : kShutter) Add(hShutter, s.label);
     tm.row += kRow;
-    hRealCam = CheckBox(L"Real camera blur - light-correct, soft shutter edges", tm.x + 12, tm.row, tm.w - 24);
-    tm.row += 26;
-    Label(tm, L"Rolling shutter");
-    hRolling = Combo(0, CtrlX(tm), tm.row, CtrlW(tm));
-    for (const Rolling& r : kRolling) Add(hRolling, r.label);
-    tm.row += kRow;
-    Label(tm, L"Light streaks");
-    hStreaks = Combo(0, CtrlX(tm), tm.row, CtrlW(tm));
-    for (const Streaks& s : kStreaks) Add(hStreaks, s.label);
-    tm.row += kRow;
-    hInfo = Hint(tm.x + 12, tm.row, tm.w - 24, 36);
-    tm.row += 38;
-    leftY = EndGroup(tm);
+    hInfo = Hint(tm.x + kIn, tm.row, tm.w - 2 * kIn, 54);
+    tm.row += 56;
+    EndGroup(tm);
 
-    Group cap = BeginGroup(L"Capture and ReShade", kRightX, top, kColW);
-    Label(cap, L"Capture");
+    Group cam = BeginGroup(L"Camera", kRightX, kTop, kColW, I_Camera);
+    hStabilizer = CheckBox(L"Camera stabilizer", cam.x + kIn, cam.row + 4, cam.w - 2 * kIn);
+    Hint(cam.x + kIn + kIndent, cam.row + 30, cam.w - 2 * kIn - kIndent, 18,
+         L"No shake on slow Smooth Blend moves. Recommended.");
+    cam.row += 58;
+    Label(cam, L"Rolling shutter");
+    hRolling = Combo(0, CtrlX(cam), cam.row, CtrlW(cam));
+    for (const Rolling& r : kRolling) Add(hRolling, r.label);
+    cam.row += kRow;
+    Hint(cam.x + kIn, cam.row, cam.w - 2 * kIn, 36,
+         L"Off is a cinema camera. 8-25 ms makes fast pans lean like a phone. Needs blur samples.");
+    cam.row += 38;
+    EndGroup(cam);
+
+    // ================= 3. Capture: where the frame is taken, what the screen shows
+    g_page = 2;
+    Group cap = BeginGroup(L"Capture", kLeftX, kTop, kColW, I_Frame);
+    Label(cap, L"Take the frame");
     hCapture = Combo(ID_CAPTURE, CtrlX(cap), cap.row, CtrlW(cap));
     for (const Choice& c : kCapture) Add(hCapture, c.label);
     cap.row += kRow;
-    hReshade = CheckBox(L"Apply my ReShade preset to the video (DOF, grade)", cap.x + 12, cap.row, cap.w - 24, ID_CAPTURE);
-    cap.row += 26;
-    hLivePreview = CheckBox(L"Show the finished frame on screen while exporting (focus pulls)", cap.x + 12, cap.row,
-                            cap.w - 24, ID_CAPTURE);
-    cap.row += 30;
-    hCaptureNote = Hint(cap.x + 12, cap.row, cap.w - 24, 54);
-    cap.row += 56;
-    rightY = EndGroup(cap);
-    pageBottom[1] = std::max(leftY, rightY);
+    hCaptureNote = Hint(cap.x + kIn, cap.row, cap.w - 2 * kIn, 36);
+    cap.row += 46;
+    hReshade = CheckBox(L"Apply my ReShade preset to the video", cap.x + kIn, cap.row + 4, cap.w - 2 * kIn, ID_CAPTURE);
+    Hint(cap.x + kIn + kIndent, cap.row + 30, cap.w - 2 * kIn - kIndent, 18,
+         L"Depth of field, grade - everything in your preset.");
+    cap.row += 58;
+    hLivePreview = CheckBox(L"Show the finished frame while exporting", cap.x + kIn, cap.row + 4, cap.w - 2 * kIn,
+                            ID_CAPTURE);
+    Hint(cap.x + kIn + kIndent, cap.row + 30, cap.w - 2 * kIn - kIndent, 18,
+         L"See the depth of field on screen to check focus pulls.");
+    cap.row += 58;
+    EndGroup(cap);
 
-    // ================= 3. Passes: extra files written with every video
-    g_page = 2;
-    Group dp = BeginGroup(L"Depth and normals", kLeftX, top, kColW);
-    hDepthOn = CheckBox(L"Depth map with every video", dp.x + 12, dp.row, dp.w - 24, ID_DEPTH);
-    dp.row += 26;
-    hNormalsOn = CheckBox(L"Surface normals from the depth (relighting, AO in post)", dp.x + 12, dp.row, dp.w - 24,
-                          ID_DEPTH);
-    dp.row += 28;
+    Group osd = BeginGroup(L"On screen while exporting", kRightX, kTop, kColW, I_Monitor);
+    hProgress = CheckBox(L"Show export progress", osd.x + kIn, osd.row + 4, osd.w - 2 * kIn);
+    Hint(osd.x + kIn + kIndent, osd.row + 30, osd.w - 2 * kIn - kIndent, 36,
+         L"%, frames, motion blur and time left. Drawn after the frame is taken, so never in the video.");
+    osd.row += 78;
+    Label(osd, L"Text size");
+    hOsdSize = Combo(0, CtrlX(osd), osd.row, CtrlW(osd));
+    for (const Choice& c : kOsdSize) Add(hOsdSize, c.label);
+    osd.row += kRow + 4;
+    hNotify = CheckBox(L"Sound and a note when an export finishes", osd.x + kIn, osd.row + 4, osd.w - 2 * kIn);
+    Hint(osd.x + kIn + kIndent, osd.row + 30, osd.w - 2 * kIn - kIndent, 18, L"The taskbar button flashes too.");
+    osd.row += 58;
+    EndGroup(osd);
+
+    // ================= 4. Passes: extra files written with every video
+    g_page = 3;
+    Group dp = BeginGroup(L"Depth and normals", kLeftX, kTop, kColW, I_Layers);
+    hDepthOn = CheckBox(L"Depth map with every video", dp.x + kIn, dp.row + 4, dp.w - 2 * kIn, ID_DEPTH);
+    dp.row += kRow;
+    hNormalsOn = CheckBox(L"Surface normals from the depth", dp.x + kIn, dp.row + 4, dp.w - 2 * kIn, ID_DEPTH);
+    Hint(dp.x + kIn + kIndent, dp.row + 30, dp.w - 2 * kIn - kIndent, 18, L"For relighting and ambient occlusion in post.");
+    dp.row += 58;
     Label(dp, L"Format");
     hDepthFormat = Combo(ID_DEPTH, CtrlX(dp), dp.row, CtrlW(dp));
     for (const Choice& c : kDepthFormat) Add(hDepthFormat, c.label);
     dp.row += kRow;
     Label(dp, L"Range (m)");
-    hDepthNear = Edit(CtrlX(dp), dp.row, 60, 0, ID_DEPTH);
-    Make(L"STATIC", L"to", SS_CENTER, CtrlX(dp) + 62, dp.row + 4, 24, 20);
-    hDepthFar = Edit(CtrlX(dp) + 88, dp.row, 60, 0, ID_DEPTH);
-    hDepthAuto = CheckBox(L"Auto (from each clip)", CtrlX(dp) + 160, dp.row + 2, CtrlW(dp) - 160, ID_DEPTH);
+    hDepthNear = Edit(CtrlX(dp), dp.row, 64, 0, ID_DEPTH);
+    Text(CtrlX(dp) + 64, dp.row + 7, 28, 20, L"to", col::text2, g_font, SS_CENTER);
+    hDepthFar = Edit(CtrlX(dp) + 92, dp.row, 64, 0, ID_DEPTH);
+    hDepthAuto = CheckBox(L"Auto", CtrlX(dp) + CtrlW(dp) - 100, dp.row + 4, 100, ID_DEPTH);
     dp.row += kRow;
     Label(dp, L"Look");
-    hDepthCurve = Combo(ID_DEPTH, CtrlX(dp), dp.row, 170);
+    const int dhalf = (CtrlW(dp) - 12) / 2;
+    hDepthCurve = Combo(ID_DEPTH, CtrlX(dp), dp.row, dhalf);
     for (const Choice& c : kDepthCurve) Add(hDepthCurve, c.label);
-    hDepthWhite = Combo(ID_DEPTH, CtrlX(dp) + 176, dp.row, CtrlW(dp) - 176);
+    hDepthWhite = Combo(ID_DEPTH, CtrlX(dp) + dhalf + 12, dp.row, CtrlW(dp) - dhalf - 12);
     for (const Choice& c : kDepthWhite) Add(hDepthWhite, c.label);
     dp.row += kRow;
     Label(dp, L"Normals FOV");
-    hNormalsFov = Edit(CtrlX(dp), dp.row, 50, ES_NUMBER, ID_DEPTH);
-    Hint(CtrlX(dp) + 58, dp.row + 4, CtrlW(dp) - 58, 20, L"degrees - only used without Focus Puller");
+    hNormalsFov = Edit(CtrlX(dp), dp.row, 64, ES_NUMBER, ID_DEPTH);
+    Hint(CtrlX(dp) + 76, dp.row + 8, CtrlW(dp) - 76, 18, L"degrees, without Focus Puller");
     dp.row += kRow;
-    hDepthNote = Hint(dp.x + 12, dp.row, dp.w - 24, 52);
-    dp.row += 54;
-    leftY = EndGroup(dp);
+    hDepthNote = Hint(dp.x + kIn, dp.row, dp.w - 2 * kIn, 54);
+    dp.row += 56;
+    EndGroup(dp);
 
-    Group ex = BeginGroup(L"More files with every video", kRightX, top, kColW);
-    hPlateOn = CheckBox(L"Clean plate - the same shot without ReShade (ProRes)", ex.x + 12, ex.row, ex.w - 24, ID_DEPTH);
-    ex.row += 26;
-    hProxyOn = CheckBox(L"Proxy - half size H.264 for fast editing", ex.x + 12, ex.row, ex.w - 24, ID_DEPTH);
-    ex.row += 26;
-    hIdOn = CheckBox(L"ID pass - experimental colour matte from the game's stencil", ex.x + 12, ex.row, ex.w - 24,
-                     ID_DEPTH);
-    ex.row += 28;
-    hPassNote = Hint(ex.x + 12, ex.row, ex.w - 24, 52);
-    ex.row += 54;
-    rightY = EndGroup(ex) + 10;
+    Group ex = BeginGroup(L"More files", kRightX, kTop, kColW, I_Doc);
+    hPlateOn = CheckBox(L"Clean plate", ex.x + kIn, ex.row + 4, ex.w - 2 * kIn, ID_DEPTH);
+    Hint(ex.x + kIn + kIndent, ex.row + 30, ex.w - 2 * kIn - kIndent, 18, L"The same shot without ReShade (ProRes).");
+    ex.row += 58;
+    hProxyOn = CheckBox(L"Proxy", ex.x + kIn, ex.row + 4, ex.w - 2 * kIn, ID_DEPTH);
+    Hint(ex.x + kIn + kIndent, ex.row + 30, ex.w - 2 * kIn - kIndent, 18, L"Half-size H.264 for fast editing.");
+    ex.row += 58;
+    hPassNote = Hint(ex.x + kIn, ex.row, ex.w - 2 * kIn, 36);
+    ex.row += 38;
+    EndGroup(ex);
 
-    Group hf = BeginGroup(L"HFR export (high frame rate)", kRightX, rightY, kColW);
-    hHfrOn = CheckBox(L"Also save every game frame, unblended (e.g. 960 fps)", hf.x + 12, hf.row, hf.w - 24, ID_DEPTH);
-    hf.row += 28;
-    Label(hf, L"Format");
-    hHfrFormat = Combo(ID_DEPTH, CtrlX(hf), hf.row, CtrlW(hf));
-    for (const Choice& c : kHfrFormat) Add(hHfrFormat, c.label);
-    hf.row += kRow;
-    Label(hf, L"Keep");
-    hHfrEvery = Combo(ID_DEPTH, CtrlX(hf), hf.row, CtrlW(hf));
-    for (const Every& e : kHfrEvery) Add(hHfrEvery, e.label);
-    hf.row += kRow;
-    hHfrNote = Hint(hf.x + 12, hf.row, hf.w - 24, 36);
-    hf.row += 38;
-    rightY = EndGroup(hf);
-    pageBottom[2] = std::max(leftY, rightY);
+    // ================= 5. Camera data and the log
+    g_page = 4;
+    Group fp = BeginGroup(L"Camera files", kLeftX, kTop, kColW, I_Video);
+    hCamFiles = CheckBox(L"Write the camera files with every export", fp.x + kIn, fp.row + 4, fp.w - 2 * kIn);
+    fp.row += kRow;
+    hCamFolder = CheckBox(L"In a \"camera\" folder next to the video", fp.x + kIn + kIndent, fp.row + 4,
+                          fp.w - 2 * kIn - kIndent);
+    fp.row += kRow + 4;
+    Hint(fp.x + kIn, fp.row, fp.w - 2 * kIn, 112,
+         L"Needs the Focus Puller add-on. Every export then also writes the Rockstar Editor camera, frame for "
+         L"frame:\r\n"
+         L"•   _camera.jsx  -  After Effects (File > Scripts > Run Script File)\r\n"
+         L"•   _camera.py  -  Blender (Scripting > Run Script)\r\n"
+         L"•   _camera.csv  -  position, rotation, FOV, focus and aperture\r\n"
+         L"The same switch is in Focus Puller > Export.");
+    fp.row += 116;
+    EndGroup(fp);
 
-    // ================= 4. Workflow: while and after exporting, the camera data, diagnostics
-    g_page = 3;
-    Group wk = BeginGroup(L"While and after exporting", kLeftX, top, kColW);
-    hProgress = CheckBox(L"Show export progress on screen (%, frames, motion blur, time left) - never in the video",
-                         wk.x + 12, wk.row, wk.w - 24);
-    wk.row += 26;
-    Make(L"STATIC", L"Progress text size:", SS_LEFT, wk.x + 32, wk.row + 3, 140, 20);
-    hOsdSize = Combo(0, wk.x + 176, wk.row, 300);
-    for (const Choice& c : kOsdSize) Add(hOsdSize, c.label);
-    wk.row += 30;
-    hNotify = CheckBox(L"When an export finishes: sound, taskbar flash and an on-screen note", wk.x + 12, wk.row,
-                       wk.w - 24);
-    wk.row += 30;
-    hStabilizer = CheckBox(L"Camera stabilizer: no shake on slow Smooth Blend camera moves (recommended)", wk.x + 12,
-                           wk.row, wk.w - 24);
-    wk.row += 30;
-    Hint(wk.x + 12, wk.row, wk.w - 24, 52,
-         L"The progress and the finished note are drawn by ReShade after EVE1G took the frame, so they never reach "
-         L"the video. Every export also lists its passes on screen (\"also writing: depth + plate ...\").");
-    wk.row += 54;
-    leftY = EndGroup(wk) + 10;
-
-    Group dg = BeginGroup(L"Diagnostics", kLeftX, leftY, kColW);
+    Group dg = BeginGroup(L"Diagnostics", kRightX, kTop, kColW, I_Pulse);
     Label(dg, L"Log level");
-    hLog = Combo(0, CtrlX(dg), dg.row, 110);
+    hLog = Combo(0, CtrlX(dg), dg.row, CtrlW(dg) - 124);
     for (const Choice& c : kLog) Add(hLog, c.label);
-    Make(WC_BUTTONW, L"Open log", BS_PUSHBUTTON | WS_TABSTOP, CtrlX(dg) + 120, dg.row - 1, 90, 26, ID_OPENLOG);
+    Button(L"Open log", CtrlX(dg) + CtrlW(dg) - 112, dg.row, 112, 32, ID_OPENLOG, B::Secondary, I_Doc);
     dg.row += kRow;
-    hExr = CheckBox(L"Legacy OpenEXR export of original EVE (colour + game depth)", dg.x + 12, dg.row, dg.w - 24);
-    dg.row += 30;
-    leftY = EndGroup(dg);
+    Hint(dg.x + kIn, dg.row, dg.w - 2 * kIn, 36,
+         L"Found a bug? Send EVE1G.log (and your EVE1G.ini) with what you did. \"info\" is enough; \"debug\" for "
+         L"crashes.");
+    dg.row += 38;
+    EndGroup(dg);
 
-    Group fp = BeginGroup(L"Camera data for After Effects / Blender (Focus Puller)", kRightX, top, kColW);
-    hCamFiles = CheckBox(L"Write the camera files with every export  (off = only the video)", fp.x + 12, fp.row,
-                         fp.w - 24);
-    fp.row += 26;
-    hCamFolder = CheckBox(L"Put them in a \"camera\" folder next to the video", fp.x + 32, fp.row, fp.w - 44);
-    fp.row += 30;
-    Hint(fp.x + 12, fp.row, fp.w - 24, 130,
-         L"With the Focus Puller ReShade add-on, an EVE1G export can also write the Rockstar Editor camera, frame for "
-         L"frame, into a \"camera\" folder next to the video:\r\n"
-         L"  •  <video>_camera.jsx  -  After Effects (File > Scripts > Run Script File)\r\n"
-         L"  •  <video>_camera.py  -  Blender (Scripting > Run Script; export FBX for Nuke / C4D)\r\n"
-         L"  •  <video>_camera.csv  -  position, rotation, FOV, focus, aperture per frame\r\n"
-         L"The same switch is in Focus Puller > Export (ReShade menu), where you also pick which of the three files. "
-         L"Needs Focus Puller. The normals pass takes the field of view from it too.");
-    fp.row += 132;
-    rightY = EndGroup(fp);
-    pageBottom[3] = std::max(leftY, rightY);
-
-    // ---------------- status + buttons (all pages)
-    g_page = -1;
+    // Both columns of a page end on the same line, and the window fits the tallest page.
     int bottom = 0;
-    for (int b : pageBottom) bottom = std::max(bottom, b);
-    int y = bottom + 12;
-    hStatus = Make(L"STATIC", L"", SS_LEFT, kPad, y, kWinW - kPad * 2, 36);
-    y += 42;
-    Make(WC_BUTTONW, L"Open output folder", BS_PUSHBUTTON | WS_TABSTOP, kPad, y, 140, 30, ID_OPENFOLDER);
-    Make(WC_BUTTONW, L"Save", BS_DEFPUSHBUTTON | WS_TABSTOP, kWinW - kPad - 190, y, 92, 30, ID_SAVE);
-    Make(WC_BUTTONW, L"Close", BS_PUSHBUTTON | WS_TABSTOP, kWinW - kPad - 92, y, 92, 30, ID_CLOSE);
-    g_height = y + 30 + kPad;
+    for (int p = 0; p < kPages; ++p) {
+        int end[2] = {0, 0}, last[2] = {-1, -1};
+        for (size_t i = 0; i < g_cards.size(); ++i) {
+            const Card& c = g_cards[i];
+            if (c.page != p) continue;
+            const int side = c.x == kLeftX ? 0 : 1;
+            if (c.y + c.h > end[side]) end[side] = c.y + c.h, last[side] = (int)i;
+        }
+        const int b = std::max(end[0], end[1]);
+        for (int s = 0; s < 2; ++s)
+            if (last[s] >= 0) g_cards[last[s]].h = b - g_cards[last[s]].y;
+        bottom = std::max(bottom, b);
+    }
+
+    // ---------------- bottom bar and sidebar foot (all pages)
+    g_page = -1;
+    const int footY = bottom + 24;
+    g_height = footY + kFootH;
+    const int by = footY + (kFootH - 40) / 2;
+    hStatus = Text(kLeftX, footY + 18, kWinW - kLeftX - kPad - 460, 40, L"", col::text2, g_small);
+    g_ctl[hStatus].bgc = col::foot;
+    HWND b = Button(L"Open output folder", kWinW - kPad - 440, by, 188, 40, ID_OPENFOLDER, B::Secondary, I_Folder);
+    g_ctl[b].bgc = col::foot;
+    b = Button(L"Save", kWinW - kPad - 240, by, 136, 40, ID_SAVE, B::Primary, I_Check);
+    g_ctl[b].bgc = col::foot;
+    b = Button(L"Close", kWinW - kPad - 92, by, 92, 40, ID_CLOSE, B::Ghost);
+    g_ctl[b].bgc = col::foot;
+    hGitHub = Button(L"Updates on GitHub", 16, g_height - 60, kSideW - 32, 44, ID_GITHUB, B::Ghost, I_Arrow);
+    g_ctl[hGitHub].bgc = col::side;
 }
 
-// Shows the controls of one tab and hides the others.
+// Shows the controls of one page and hides the others.
 void ShowPage(int page) {
     page = std::clamp(page, 0, kPages - 1);
+    g_curPage = page;
     for (int p = 0; p < kPages; ++p)
         for (HWND c : g_pages[p]) ShowWindow(c, p == page ? SW_SHOW : SW_HIDE);
-    SendMessageW(hTabs, TCM_SETCURSEL, page, 0);
-    g_curPage = page;
     ShowWindow(hFpsCustom, (page == 1 && Sel(hFps) == kFpsCount) ? SW_SHOW : SW_HIDE);
+    for (auto& [h, c] : g_ctl)
+        if (c.kind == K::Nav) InvalidateRect(h, nullptr, FALSE);
+    InvalidateRect(g_wnd, nullptr, FALSE);
 }
 
 void Browse() {
@@ -1254,11 +1544,368 @@ void Browse() {
     }
 }
 
+// ------------------------------------------------------------------------------------------------------- drawing
+// A list entry like "Edit master  -  ProRes 422 HQ (...)  [recommended]": the name in white, the rest in grey,
+// and a small outlined RECOMMENDED tag for the recommended one.
+void DrawEntry(HDC dc, RECT r, const std::wstring& s, bool enabled, bool field = false) {
+    std::wstring t = s, main, rest;
+    bool rec = false;
+    const size_t tag = t.find(L"[recommended]");
+    if (tag != std::wstring::npos) {
+        rec = true;
+        t.erase(tag, 13);
+    }
+    while (!t.empty() && t.back() == L' ') t.pop_back();
+    const size_t d = t.find(L"  -  ");
+    main = d == std::wstring::npos ? t : t.substr(0, d);
+    rest = d == std::wstring::npos ? L"" : t.substr(d + 5);
+    while (!rest.empty() && rest.front() == L' ') rest.erase(0, 1);
+
+    if (rec) {
+        const std::wstring word = L"RECOMMENDED";
+        const int tw = TextW(dc, word, g_tag, S(1)) + S(16);
+        if (r.right - r.left > tw + S(110)) {
+            const int mid = (r.top + r.bottom) / 2;
+            RECT pill{r.right - tw, mid - S(10), r.right, mid + S(10)};
+            Round(dc, pill, (float)S(5), CLR_INVALID, enabled ? RGB(96, 96, 102) : col::dim);
+            RECT tr = pill;
+            tr.left += S(1);   // the letter spacing also follows the last letter
+            Txt(dc, word, tr, g_tag, enabled ? col::text : col::dim, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                S(1));
+            r.right = pill.left - S(8);
+        }
+    }
+    const int mw = std::min<int>(TextW(dc, main, g_font), r.right - r.left);
+    RECT a = r;
+    a.right = a.left + mw;
+    Txt(dc, main, a, g_font, enabled ? col::text : col::dim);
+    // In the closed box the grey description is shown only when it fits whole (the list shows all of it).
+    const bool fits = !field || TextW(dc, rest, g_font) <= r.right - a.right - S(10);
+    if (!rest.empty() && fits && r.right - a.right > S(30)) {
+        RECT b = r;
+        b.left = a.right + S(10);
+        Txt(dc, rest, b, g_font, enabled ? col::text2 : col::dim);
+    }
+}
+
+void Chevron(HDC dc, int cx, int cy, COLORREF c) {
+    Gdiplus::Graphics g(dc);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+    Gdiplus::Pen pen(GC(c), (float)std::max(1.5, 1.7 * g_scale));
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    const float w = (float)S(4), h = (float)S(2) + 0.5f;
+    g.DrawLine(&pen, cx - w, cy - h, (float)cx, cy + h);
+    g.DrawLine(&pen, (float)cx, cy + h, cx + w, cy - h);
+}
+
+void PaintCombo(HWND h, HDC target) {
+    RECT rc;
+    GetClientRect(h, &rc);
+    HDC dc = CreateCompatibleDC(target);
+    HBITMAP bm = CreateCompatibleBitmap(target, rc.right, rc.bottom);
+    const HGDIOBJ old = SelectObject(dc, bm);
+    const Ctl& c = g_ctl[h];
+    FillRect(dc, &rc, BrushOf(c.bgc));
+    const bool en = IsWindowEnabled(h) != FALSE;
+    const bool open = SendMessageW(h, CB_GETDROPPEDSTATE, 0, 0) != 0;
+    const bool focus = GetFocus() == h;
+    const COLORREF line = !en ? CLR_INVALID : (open || focus) ? col::accent : c.hover ? col::inputHover : CLR_INVALID;
+    Round(dc, rc, (float)S(8), col::input, line);
+    const int sel = Sel(h);
+    if (sel >= 0) {
+        const int n = (int)SendMessageW(h, CB_GETLBTEXTLEN, sel, 0);
+        std::wstring s(std::max(n, 0), 0);
+        if (n > 0) SendMessageW(h, CB_GETLBTEXT, sel, (LPARAM)s.data());
+        RECT tr{rc.left + S(12), rc.top, rc.right - S(32), rc.bottom - S(3)};
+        DrawEntry(dc, tr, s, en, true);
+    }
+    Chevron(dc, rc.right - S(17), (rc.top + rc.bottom) / 2, en ? (open ? col::text : col::text2) : col::dim);
+    BitBlt(target, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, old);
+    DeleteObject(bm);
+    DeleteDC(dc);
+}
+
+// A switch: white track with a black knob when on, grey when off.
+void DrawToggle(const DRAWITEMSTRUCT* d, const Ctl& c) {
+    HDC dc = d->hDC;
+    RECT r = d->rcItem;
+    FillRect(dc, &r, BrushOf(c.bgc));
+    const bool on = Checked(d->hwndItem);
+    const bool en = !(d->itemState & ODS_DISABLED);
+    const int tw = S(42), th = S(24);
+    RECT t{r.left, r.top + (std::min<int>(r.bottom - r.top, S(24)) - th) / 2, r.left + tw, 0};
+    t.bottom = t.top + th;
+    const COLORREF track = on ? (en ? (c.hover ? col::accentHi : col::accent) : RGB(84, 84, 90))
+                              : (en ? (c.hover ? RGB(70, 70, 75) : col::track) : col::line);
+    Round(dc, t, th / 2.0f, track);
+    if (d->itemState & ODS_FOCUS) {
+        RECT f = t;
+        InflateRect(&f, S(3), S(3));
+        Round(dc, f, th / 2.0f + S(3), CLR_INVALID, RGB(150, 150, 156), 1.2f);
+    }
+    const int k = th - S(6);
+    RECT knob{on ? t.right - S(3) - k : t.left + S(3), t.top + S(3), 0, 0};
+    knob.right = knob.left + k;
+    knob.bottom = knob.top + k;
+    Round(dc, knob, k / 2.0f, on ? (en ? col::ink : RGB(40, 40, 43)) : (en ? RGB(156, 156, 162) : col::dim));
+    wchar_t buf[256];
+    GetWindowTextW(d->hwndItem, buf, 256);
+    RECT tr{t.right + S(14), r.top, r.right, r.bottom};
+    Txt(dc, buf, tr, g_font, en ? col::text : col::dim,
+        (r.bottom - r.top > S(30) ? DT_WORDBREAK : DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS) | DT_LEFT | DT_NOPREFIX);
+}
+
+// Buttons: rounded rectangles. The main action is white with black text, the others grey or text only.
+void DrawButton(const DRAWITEMSTRUCT* d, const Ctl& c) {
+    HDC dc = d->hDC;
+    RECT r = d->rcItem;
+    FillRect(dc, &r, BrushOf(c.bgc));
+    const bool en = !(d->itemState & ODS_DISABLED);
+    const bool down = (d->itemState & ODS_SELECTED) != 0;
+    COLORREF fill = CLR_INVALID, line = CLR_INVALID, text = col::text;
+    HFONT font = g_semi;
+    switch (c.btn) {
+    case B::Primary:
+        fill = !en ? col::accentSoft : down ? col::accentLo : c.hover ? col::accentHi : col::accent;
+        text = col::ink;
+        break;
+    case B::Secondary:
+        fill = down ? col::button : c.hover ? col::buttonHover : col::button;
+        break;
+    case B::Ghost:
+        fill = c.hover || down ? (c.bgc == col::side ? RGB(26, 26, 28) : col::button) : CLR_INVALID;
+        text = c.hover ? col::text : col::text2;
+        font = g_font;
+        break;
+    }
+    if (d->itemState & ODS_FOCUS) line = RGB(150, 150, 156);
+    if (fill != CLR_INVALID || line != CLR_INVALID) Round(dc, r, (float)S(8), fill, line);
+    wchar_t buf[128];
+    GetWindowTextW(d->hwndItem, buf, 128);
+    const COLORREF fg = en ? text : col::dim;
+    const int is = S(16), gap = S(8);
+    const bool icon = c.icon >= 0;
+    const int total = TextW(dc, buf, font) + (icon ? is + gap : 0);
+    // in the sidebar the icon and text line up with the page list; elsewhere they are centred
+    const int x0 = c.bgc == col::side ? r.left + S(17) : (r.left + r.right - total) / 2;
+    if (icon) Icon(dc, c.icon, x0, (r.top + r.bottom - is) / 2, is, fg);
+    RECT tr{c.bgc == col::side ? r.left + S(46) : x0 + (icon ? is + gap : 0), r.top, r.right, r.bottom};
+    Txt(dc, buf, tr, font, fg, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+}
+
+// Sidebar page: an icon and the name. The open page is white.
+void DrawNav(const DRAWITEMSTRUCT* d, const Ctl& c) {
+    HDC dc = d->hDC;
+    RECT r = d->rcItem;
+    FillRect(dc, &r, g_brSide);
+    const bool sel = c.nav == g_curPage;
+    if (sel || c.hover) Round(dc, r, (float)S(10), sel ? col::navSel : RGB(26, 26, 28));
+    const COLORREF fg = sel ? col::ink : c.hover ? col::text : col::text2;
+    const int is = S(18);
+    Icon(dc, c.icon, r.left + S(16), (r.top + r.bottom - is) / 2, is, fg);
+    wchar_t buf[64];
+    GetWindowTextW(d->hwndItem, buf, 64);
+    RECT tr{r.left + S(46), r.top, r.right - S(8), r.bottom};
+    Txt(dc, buf, tr, g_semi, fg);
+}
+
+void PaintWindow(HDC target) {
+    RECT rc;
+    GetClientRect(g_wnd, &rc);
+    HDC dc = CreateCompatibleDC(target);
+    HBITMAP bm = CreateCompatibleBitmap(target, rc.right, rc.bottom);
+    const HGDIOBJ old = SelectObject(dc, bm);
+
+    FillRect(dc, &rc, g_brBg);
+    RECT side{0, 0, S(kSideW), rc.bottom};
+    FillRect(dc, &side, g_brSide);
+    HBRUSH lb = CreateSolidBrush(col::line);
+    RECT edge{S(kSideW) - 1, 0, S(kSideW), rc.bottom};
+    FillRect(dc, &edge, lb);
+
+    // brand: EVE1G, then "—— BY TEX1G" and the version
+    const int bx = S(28), by = S(30);
+    Txt(dc, L"EVE1G", {bx, by, S(kSideW) - S(12), by + S(40)}, g_brand, col::text, DT_LEFT | DT_TOP | DT_SINGLELINE,
+        S(1));
+    Txt(dc, L"BY TEX1G", {bx + S(1), by + S(44), S(kSideW) - S(12), by + S(60)}, g_tag, col::text2,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE, S(1));
+    {
+        std::wstring v = W(EVE1G_VERSION), kind;   // "0.11.2-beta" -> "BETA  0.11.2"
+        const size_t dash = v.find(L'-');
+        if (dash != std::wstring::npos) kind = Upper(v.substr(dash + 1)), v = v.substr(0, dash);
+        const std::wstring label = kind.empty() ? v : kind + L"  " + v;
+        const int vw = TextW(dc, label, g_tag, S(1)) + S(20);
+        RECT pill{bx, by + S(70), bx + vw, by + S(70) + S(22)};
+        Round(dc, pill, (float)S(6), CLR_INVALID, RGB(70, 70, 75));
+        RECT tr = pill;
+        tr.left += S(1);
+        Txt(dc, label, tr, g_tag, col::text2, DT_CENTER | DT_VCENTER | DT_SINGLELINE, S(1));
+    }
+    Txt(dc, L"For the Rockstar Editor only. Never take mods into GTA Online.",
+        {bx, rc.bottom - S(122), S(kSideW) - S(24), rc.bottom - S(70)}, g_small, col::hint, DT_LEFT | DT_WORDBREAK);
+
+    // page title: big, wide, uppercase, with a dash after it; the page number on the right
+    const PageInfo& pg = kPage[g_curPage];
+    const std::wstring title = Upper(pg.title);
+    const int ty = S(28);
+    Txt(dc, title, {S(kLeftX), ty, rc.right - S(kPad) - S(80), ty + S(50)}, g_pageTitle, col::text,
+        DT_LEFT | DT_TOP | DT_SINGLELINE);
+    wchar_t num[16];
+    swprintf_s(num, L"%02d / %02d", g_curPage + 1, kPages);
+    Txt(dc, num, {rc.right - S(kPad) - S(120), ty + S(8), rc.right - S(kPad), ty + S(30)}, g_num, col::hint,
+        DT_RIGHT | DT_VCENTER | DT_SINGLELINE, S(1));
+    Txt(dc, pg.sub, {S(kLeftX), S(90), rc.right - S(kPad), S(112)}, g_font, col::text2,
+        DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+    // cards of this page
+    for (const Card& cd : g_cards) {
+        if (cd.page != g_curPage) continue;
+        RECT r{S(cd.x), S(cd.y), S(cd.x + cd.w), S(cd.y + cd.h)};
+        Round(dc, r, (float)S(16), col::card, col::cardLine);
+        Icon(dc, cd.icon, r.left + S(kIn), r.top + S(21), S(18), col::text);
+        Txt(dc, Upper(cd.title), {r.left + S(kIn) + S(cd.icon >= 0 ? 28 : 0), r.top + S(20), r.right - S(kIn), r.top + S(40)}, g_cardTitle,
+            col::text, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, S(1));
+    }
+    // boxes around the text fields
+    for (const auto& [h, c] : g_ctl) {
+        if (c.kind != K::Edit || !IsWindowVisible(h)) continue;
+        const bool en = IsWindowEnabled(h) != FALSE;
+        const COLORREF line = !en ? CLR_INVALID : GetFocus() == h ? col::accent : c.hover ? col::inputHover : CLR_INVALID;
+        Round(dc, c.frame, (float)S(8), col::input, line);
+    }
+
+    // bottom bar: a hairline above the status and the buttons
+    RECT top{S(kLeftX), rc.bottom - S(kFootH), rc.right - S(kPad), rc.bottom - S(kFootH) + 1};
+    FillRect(dc, &top, lb);
+    DeleteObject(lb);
+
+    BitBlt(target, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, old);
+    DeleteObject(bm);
+    DeleteDC(dc);
+}
+
+void Repaint(HWND h) {   // the box of a text field is drawn by the window behind it
+    const auto it = g_ctl.find(h);
+    if (it != g_ctl.end() && it->second.kind == K::Edit) {
+        RECT f = it->second.frame;
+        InvalidateRect(g_wnd, &f, FALSE);
+    }
+}
+
+// Hover for buttons, switches and the sidebar.
+LRESULT CALLBACK HoverProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+    switch (msg) {
+    case WM_MOUSEMOVE: {
+        Ctl& c = g_ctl[h];
+        if (!c.hover) {
+            c.hover = true;
+            TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0};
+            TrackMouseEvent(&t);
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        break;
+    }
+    case WM_MOUSELEAVE:
+        g_ctl[h].hover = false;
+        InvalidateRect(h, nullptr, FALSE);
+        break;
+    case WM_LBUTTONDBLCLK:   // a quick second click on a switch flips it again
+        return DefSubclassProc(h, WM_LBUTTONDOWN, wp, lp);
+    }
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
+LRESULT CALLBACK ComboProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+    switch (msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        PaintCombo(h, dc);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_MOUSEMOVE: {
+        Ctl& c = g_ctl[h];
+        if (!c.hover) {
+            c.hover = true;
+            TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0};
+            TrackMouseEvent(&t);
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        break;
+    }
+    case WM_MOUSELEAVE:
+        g_ctl[h].hover = false;
+        InvalidateRect(h, nullptr, FALSE);
+        break;
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+    case WM_ENABLE:
+    case CB_SETCURSEL: {
+        const LRESULT r = DefSubclassProc(h, msg, wp, lp);
+        InvalidateRect(h, nullptr, FALSE);
+        return r;
+    }
+    }
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
+LRESULT CALLBACK EditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+    switch (msg) {
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+    case WM_ENABLE: {
+        const LRESULT r = DefSubclassProc(h, msg, wp, lp);
+        Repaint(h);
+        return r;
+    }
+    case WM_MOUSEMOVE: {
+        Ctl& c = g_ctl[h];
+        if (!c.hover) {
+            c.hover = true;
+            TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0};
+            TrackMouseEvent(&t);
+            Repaint(h);
+        }
+        break;
+    }
+    case WM_MOUSELEAVE:
+        g_ctl[h].hover = false;
+        Repaint(h);
+        break;
+    }
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
+void FlashStatus(const wchar_t* text) {
+    g_ctl[hStatus].fg = col::good;
+    SetWindowTextW(hStatus, text);
+    InvalidateRect(hStatus, nullptr, TRUE);
+    SetTimer(g_wnd, 1, 2600, nullptr);
+}
+
 LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_COMMAND: {
         const int id = LOWORD(wp), code = HIWORD(wp);
-        if (id == ID_BROWSE) {
+        const HWND from = (HWND)lp;
+        if (code == BN_CLICKED) {   // switches keep their own state
+            const auto t = g_toggle.find(from);
+            if (t != g_toggle.end()) {
+                t->second = !t->second;
+                InvalidateRect(from, nullptr, FALSE);
+            }
+        }
+        if (code == CBN_DROPDOWN || code == CBN_CLOSEUP) InvalidateRect(from, nullptr, FALSE);
+        if (id >= ID_NAV && id < ID_NAV + kPages) {
+            ShowPage(id - ID_NAV);
+        } else if (id == ID_BROWSE) {
             Browse();
         } else if ((id == ID_CODEC || id == ID_FPS || id == ID_SHUTTER || id == ID_CAPTURE) && code == CBN_SELCHANGE) {
             if (id == ID_CODEC) {   // a new preset starts from its recommended quality
@@ -1276,10 +1923,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (id == ID_SAVE) {
             if (Save()) {
                 UpdateHints();
-                MessageBoxW(h, L"Saved. It applies to your next export.", kApp, MB_ICONINFORMATION);
+                FlashStatus(L"Saved. It applies to your next export.");
             }
         } else if (id == ID_CLOSE) {
             DestroyWindow(h);
+        } else if (id == ID_GITHUB) {
+            ShellExecuteW(h, L"open", kGitHub, nullptr, nullptr, SW_SHOWNORMAL);
         } else if (id == ID_VOUKODER) {
             const std::wstring dir = W(g_dir);
             const std::wstring exe = dir + L"EVE1G-Encoder.exe";
@@ -1319,23 +1968,79 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
-    case WM_NOTIFY: {
-        const NMHDR* n = reinterpret_cast<const NMHDR*>(lp);
-        if (n && n->hwndFrom == hTabs && n->code == TCN_SELCHANGE) {
-            ShowPage((int)SendMessageW(hTabs, TCM_GETCURSEL, 0, 0));
+    case WM_TIMER:
+        if (wp == 1) {
+            KillTimer(h, 1);
+            UpdateStatus();
         }
-        break;
-    }
+        return 0;
     case WM_ACTIVATE:
         if (LOWORD(wp) != WA_INACTIVE && hStatus) UpdateStatus();   // refresh after an export
         break;
+    case WM_MEASUREITEM: {
+        MEASUREITEMSTRUCT* m = reinterpret_cast<MEASUREITEMSTRUCT*>(lp);
+        if (m->CtlType == ODT_COMBOBOX) {
+            m->itemHeight = m->itemID == (UINT)-1 ? S(32) - 6 : S(34);
+            return TRUE;
+        }
+        break;
+    }
+    case WM_DRAWITEM: {
+        const DRAWITEMSTRUCT* d = reinterpret_cast<const DRAWITEMSTRUCT*>(lp);
+        if (d->CtlType == ODT_COMBOBOX) {
+            if (d->itemState & ODS_COMBOBOXEDIT) {   // the closed box: drawn whole by PaintCombo
+                InvalidateRect(d->hwndItem, nullptr, FALSE);
+                return TRUE;
+            }
+            if (d->itemID == (UINT)-1) return TRUE;
+            const bool sel = (d->itemState & ODS_SELECTED) != 0;
+            RECT r = d->rcItem;
+            FillRect(d->hDC, &r, sel ? g_brSoft : g_brInput);
+            const int n = (int)SendMessageW(d->hwndItem, CB_GETLBTEXTLEN, d->itemID, 0);
+            std::wstring s(std::max(n, 0), 0);
+            if (n > 0) SendMessageW(d->hwndItem, CB_GETLBTEXT, d->itemID, (LPARAM)s.data());
+            RECT tr{r.left + S(12), r.top, r.right - S(10), r.bottom};
+            DrawEntry(d->hDC, tr, s, true);
+            return TRUE;
+        }
+        if (d->CtlType == ODT_BUTTON) {
+            const auto it = g_ctl.find(d->hwndItem);
+            if (it == g_ctl.end()) break;
+            if (it->second.kind == K::Toggle) DrawToggle(d, it->second);
+            else if (it->second.kind == K::Nav) DrawNav(d, it->second);
+            else DrawButton(d, it->second);
+            return TRUE;
+        }
+        break;
+    }
     case WM_CTLCOLORSTATIC: {
         HDC dc = (HDC)wp;
-        SetBkMode(dc, TRANSPARENT);
-        const HWND c = (HWND)lp;
-        if (std::find(g_hints.begin(), g_hints.end(), c) != g_hints.end()) SetTextColor(dc, RGB(100, 100, 100));
-        if (c == hStatus) SetTextColor(dc, RGB(0, 110, 60));
-        return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+        const auto it = g_ctl.find((HWND)lp);
+        if (it == g_ctl.end()) break;
+        if (it->second.kind == K::Edit) {   // a disabled or read-only field
+            SetTextColor(dc, col::dim);
+            SetBkColor(dc, col::input);
+            return (LRESULT)g_brInput;
+        }
+        SetTextColor(dc, it->second.fg);
+        SetBkColor(dc, it->second.bgc);
+        return (LRESULT)BrushOf(it->second.bgc);
+    }
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+        HDC dc = (HDC)wp;
+        SetTextColor(dc, col::text);
+        SetBkColor(dc, col::input);
+        return (LRESULT)g_brInput;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        PaintWindow(dc);
+        EndPaint(h, &ps);
+        return 0;
     }
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -1344,12 +2049,30 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
+bool HasFont(const wchar_t* face) {
+    HDC dc = GetDC(nullptr);
+    LOGFONTW lf{};
+    lf.lfCharSet = DEFAULT_CHARSET;
+    wcsncpy(lf.lfFaceName, face, LF_FACESIZE - 1);
+    bool found = false;
+    EnumFontFamiliesExW(
+        dc, &lf, [](const LOGFONTW*, const TEXTMETRICW*, DWORD, LPARAM p) -> int { return *(bool*)p = true, 0; },
+        (LPARAM)&found, 0);
+    ReleaseDC(nullptr, dc);
+    return found;
+}
+
+HFONT Font(int px, int weight, const wchar_t* face = L"Segoe UI") {
+    return CreateFontW(-S(px), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                       CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, face);
+}
+
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     SetProcessDPIAware();
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_TAB_CLASSES};
+    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&icc);
 
     {
@@ -1370,29 +2093,50 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         return ok;
     }
 
-    NONCLIENTMETRICSW ncm{sizeof(ncm)};
-    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
-    g_font = CreateFontIndirectW(&ncm.lfMessageFont);
-    LOGFONTW bold = ncm.lfMessageFont;
-    bold.lfWeight = FW_SEMIBOLD;
-    g_bold = CreateFontIndirectW(&bold);
-    LOGFONTW title = ncm.lfMessageFont;
-    title.lfWeight = FW_BOLD;
-    title.lfHeight = -S(22);
-    g_title = CreateFontIndirectW(&title);
+    Gdiplus::GdiplusStartupInput gsi;
+    ULONG_PTR gdiplus = 0;
+    Gdiplus::GdiplusStartup(&gdiplus, &gsi, nullptr);
+
+    // Headings in Bahnschrift (built into Windows 10 / 11), Segoe UI if it is missing.
+    const bool bahn = HasFont(L"Bahnschrift"), bahnSemi = HasFont(L"Bahnschrift SemiBold");
+    const wchar_t* display = bahn ? L"Bahnschrift" : L"Segoe UI";
+    g_font = Font(14, FW_NORMAL);
+    g_small = Font(13, FW_NORMAL);
+    g_semi = Font(14, FW_SEMIBOLD);
+    g_cardTitle = bahnSemi ? Font(14, FW_NORMAL, L"Bahnschrift SemiBold") : Font(14, FW_BOLD, display);
+    g_pageTitle = Font(40, FW_BOLD, display);
+    g_brand = Font(32, FW_BOLD, display);
+    g_tag = bahnSemi ? Font(11, FW_NORMAL, L"Bahnschrift SemiBold") : Font(11, FW_SEMIBOLD, display);
+    g_num = Font(13, FW_NORMAL, display);
+    g_brBg = CreateSolidBrush(col::bg);
+    g_brSide = CreateSolidBrush(col::side);
+    g_brFoot = CreateSolidBrush(col::foot);
+    g_brCard = CreateSolidBrush(col::card);
+    g_brInput = CreateSolidBrush(col::input);
+    g_brSoft = CreateSolidBrush(col::accentSoft);
 
     WNDCLASSEXW wc{sizeof(wc)};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+    wc.hbrBackground = nullptr;
     wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wc.lpszClassName = L"EVE1GSettings";
     RegisterClassExW(&wc);
 
-    const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    g_wnd = CreateWindowExW(0, wc.lpszClassName, L"EVE1G Settings", style, CW_USEDEFAULT, CW_USEDEFAULT, S(kWinW),
-                            S(600), nullptr, nullptr, inst, nullptr);
+    const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    const std::wstring title = L"EVE1G Settings  -  " + VersionText();
+    g_wnd = CreateWindowExW(0, wc.lpszClassName, title.c_str(), style, CW_USEDEFAULT, CW_USEDEFAULT, S(kWinW), S(600),
+                            nullptr, nullptr, inst, nullptr);
+    {
+        // dark title bar (Windows 10 2004+ / 11), coloured like the sidebar on Windows 11
+        BOOL dark = TRUE;
+        if (FAILED(DwmSetWindowAttribute(g_wnd, 20, &dark, sizeof(dark))))
+            DwmSetWindowAttribute(g_wnd, 19, &dark, sizeof(dark));
+        COLORREF caption = col::side, captionText = col::text;
+        DwmSetWindowAttribute(g_wnd, 35, &caption, sizeof(caption));
+        DwmSetWindowAttribute(g_wnd, 36, &captionText, sizeof(captionText));
+    }
     Build();
     PopulateCodecs();
     RECT want{0, 0, S(kWinW), S(g_height)};
@@ -1400,7 +2144,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     SetWindowPos(g_wnd, nullptr, 0, 0, want.right - want.left, want.bottom - want.top, SWP_NOMOVE | SWP_NOZORDER);
     Load();
     {
-        // --page=N opens on a tab (1 = Output ... 4 = Workflow)
+        // --page=N opens on a page (1 = Output ... 5 = Camera data)
         const wchar_t* pg = wcsstr(GetCommandLineW(), L"--page=");
         ShowPage(pg ? _wtoi(pg + 7) - 1 : 0);
     }
@@ -1413,6 +2157,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
             DispatchMessageW(&m);
         }
     }
+    Gdiplus::GdiplusShutdown(gdiplus);
     CoUninitialize();
     return 0;
 }
